@@ -1,0 +1,25 @@
+{
+  "name": "ai-movie",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Web UI for a ComfyUI MiniMax-H3 first/last-frame to video workflow",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "node server/index.js",
+    "dev:web": "cd web && npm run dev",
+    "build": "cd web && npm run build",
+    "start": "node server/index.js",
+    "setup": "npm install && cd web && npm install"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "dependencies": {
+    "axios": "^1.6.8",
+    "cookie-parser": "^1.4.6",
+    "express": "^4.19.2",
+    "form-data": "^4.0.0",
+    "multer": "^1.4.5-lts.1",
+    "ws": "^8.16.0"
+  }
+}

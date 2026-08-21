@@ -1,0 +1,9 @@
+{
+  "port": 3000,
+  "host": "0.0.0.0",
+  "apiConfigDir": "api/config",
+  "workflowDir": "api",
+  "resourcesDir": "resources/images",
+  "dataDir": "resources/datas",
+  "sessionTtlMs": 43200000
+}

@@ -6,6 +6,14 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 
+# Credentials - never commit
+account.json
+config/account.json
+
+# User-generated content: project/template data and per-template workflows
+resources/datas/*.json
+api/*/
+!api/config/
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 

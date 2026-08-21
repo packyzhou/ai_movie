@@ -1,0 +1,15 @@
+{
+  "comment": "Copy to account.json and fill in. account.json is git-ignored - never commit it.",
+  "users": [
+    {
+      "username": "admin",
+      "password": "change-me",
+      "passwordSha256": "(optional) hex sha256 of the password; takes precedence over `password`"
+    }
+  ],
+  "comfy": {
+    "comment": "Optional. Only needed if your ComfyUI instance sits behind auth.",
+    "apiKey": "",
+    "basicAuth": { "username": "", "password": "" }
+  }
+}
