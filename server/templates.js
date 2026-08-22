@@ -15,6 +15,44 @@ function dirFor(templateId) {
  * Validate a pasted workflow. Accepts either the raw API-format map of nodes or
  * a wrapper like {"prompt": {...}} that people often copy out of a curl example.
  */
+function isObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeWorkflow(data) {
+  if (isObject(data.prompt) && !data.prompt.class_type) return data.prompt;
+  if (!Array.isArray(data.nodes)) return data;
+
+  const links = new Map();
+  for (const link of Array.isArray(data.links) ? data.links : []) {
+    const [linkId, sourceId, sourceSlot, targetId, targetSlot] = Array.isArray(link)
+      ? link
+      : [link.id, link.origin_id ?? link.originId, link.origin_slot ?? link.originSlot, link.target_id ?? link.targetId, link.target_slot ?? link.targetSlot];
+    if (linkId !== undefined) {
+      links.set(String(linkId), [sourceId, sourceSlot]);
+      links.set(`${targetId}:${targetSlot}`, [sourceId, sourceSlot]);
+    }
+  }
+
+  return Object.fromEntries(data.nodes.map((node) => {
+    const inputs = {};
+    let widgetIndex = 0;
+    for (const input of Array.isArray(node.inputs) ? node.inputs : []) {
+      const link = links.get(`${node.id}:${input.slot ?? input.index}`) ||
+        (input.link !== undefined && input.link !== null ? links.get(String(input.link)) : null);
+      if (link) inputs[input.name] = link;
+      else if (Array.isArray(node.widgets_values) && widgetIndex < node.widgets_values.length) {
+        inputs[input.name] = node.widgets_values[widgetIndex++];
+      }
+    }
+    return [String(node.id), {
+      class_type: node.class_type || node.type,
+      inputs,
+      ...(node._meta || node.title ? { _meta: { ...(node._meta || {}), ...(node.title ? { title: node.title } : {}) } } : {}),
+    }];
+  }));
+}
+
 function parseGraph(content) {
   let data = content;
   if (typeof data === 'string') {
@@ -26,20 +64,16 @@ function parseGraph(content) {
       throw new Error(`Template content is not valid JSON: ${err.message}`);
     }
   }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    throw new Error('Template content must be a JSON object');
-  }
-  if (data.prompt && typeof data.prompt === 'object' && !data.prompt.class_type) {
-    data = data.prompt;
-  }
+  if (!isObject(data)) throw new Error('Template content must be a JSON object');
+  data = normalizeWorkflow(data);
 
   const ids = Object.keys(data);
   if (!ids.length) throw new Error('Template content has no nodes');
   for (const id of ids) {
     const node = data[id];
-    if (!node || typeof node !== 'object') throw new Error(`Node "${id}" is not an object`);
+    if (!isObject(node)) throw new Error(`Node "${id}" is not an object`);
     if (!node.class_type) throw new Error(`Node "${id}" is missing "class_type"`);
-    if (!node.inputs || typeof node.inputs !== 'object') throw new Error(`Node "${id}" is missing "inputs"`);
+    if (!isObject(node.inputs)) throw new Error(`Node "${id}" is missing "inputs"`);
   }
   return data;
 }
@@ -64,16 +98,27 @@ function deriveBindings(graph) {
   if (last) bindings.lastFrame = { path: `${last[0]}.inputs.image`, type: 'image' };
 
   // The video node is the one that takes a text prompt alongside dimensions.
+  // Some custom MiniMax nodes use snake_case field names. A T2V variant may
+  // also call its prompt `first_frame`; its value is text, not an image.
   const videoNode =
     entries.find(([, n]) => 'prompt' in n.inputs && 'width' in n.inputs && 'height' in n.inputs) ||
+    entries.find(([, n]) => 'text' in n.inputs && 'width' in n.inputs && 'height' in n.inputs) ||
+    entries.find(([, n]) => 'first_frame' in n.inputs && 'last_frame' in n.inputs && 'width' in n.inputs && 'height' in n.inputs) ||
     entries.find(([, n]) => 'prompt' in n.inputs) ||
     entries.find(([, n]) => 'text' in n.inputs);
   if (videoNode) {
     const [id, node] = videoNode;
-    const promptField = 'prompt' in node.inputs ? 'prompt' : 'text';
+    const promptField = 'prompt' in node.inputs
+      ? 'prompt'
+      : 'text' in node.inputs
+        ? 'text'
+        : 'first_frame';
     bindings.prompt = { path: `${id}.inputs.${promptField}`, type: 'string' };
     if ('width' in node.inputs) bindings.width = { path: `${id}.inputs.width`, type: 'int' };
     if ('height' in node.inputs) bindings.height = { path: `${id}.inputs.height`, type: 'int' };
+    if (!bindings.lastFrame && 'last_frame' in node.inputs) {
+      bindings.lastFrame = { path: `${id}.inputs.last_frame`, type: 'image' };
+    }
   }
 
   const durationNode =
@@ -87,8 +132,14 @@ function deriveBindings(graph) {
     ? { path: `${seedNode[0]}.inputs.${'noise_seed' in seedNode[1].inputs ? 'noise_seed' : 'seed'}` }
     : null;
 
+  // MiniMax H3 T2V exposes `first_frame` as its text prompt and may use a
+  // fixed duration, so those two UI fields are intentionally not required for
+  // that workflow shape. All other templates retain the six-field contract.
+  const optional = videoNode && 'first_frame' in videoNode[1].inputs
+    ? ['firstFrame', 'duration']
+    : [];
   const missing = ['firstFrame', 'lastFrame', 'prompt', 'width', 'height', 'duration'].filter(
-    (k) => !bindings[k]
+    (k) => !bindings[k] && !optional.includes(k)
   );
   return { bindings, seed, missing };
 }

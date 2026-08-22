@@ -10,6 +10,8 @@ const jobs = require('../jobs');
 const store = require('../store');
 const tpl = require('../templates');
 const workflow = require('../workflow');
+const shotjobs = require('../shotjobs');
+const archive = require('../archive');
 const projects = require('./projects');
 const { asyncRoute, bad } = require('./helpers');
 
@@ -89,18 +91,27 @@ router.post(
 
     const template = store.templates.find(req.user, project.templateId);
     if (!template) throw bad(`Project template "${project.templateId}" no longer exists`);
-    if (template.missing && template.missing.length) {
-      throw bad(`Template "${template.name}" has no binding for: ${template.missing.join(', ')}`);
+
+    const sourceGraph = tpl.loadGraph(template.templateId);
+    // Older rows may have been created before snake_case/custom-node binding
+    // support was added. Re-derive those rows from the stored workflow.
+    const derived = tpl.deriveBindings(sourceGraph);
+    const needsDerivation = !template.bindings || !Object.keys(template.bindings).length ||
+      (template.missing && template.missing.length);
+    const bindings = needsDerivation ? derived.bindings : template.bindings;
+    const missing = needsDerivation ? derived.missing : [];
+    if (missing.length) {
+      throw bad(`Template "${template.name}" has no binding for: ${missing.join(', ')}`);
     }
 
     const [firstFrame, lastFrame] = await Promise.all([
-      pushFrame(shot.firstFrame, 'First frame'),
-      pushFrame(shot.lastFrame, 'Last frame'),
+      bindings.firstFrame ? pushFrame(shot.firstFrame, 'First frame') : Promise.resolve(''),
+      bindings.lastFrame ? pushFrame(shot.lastFrame, 'Last frame') : Promise.resolve(''),
     ]);
 
     const { graph, params } = workflow.build(
-      tpl.loadGraph(template.templateId),
-      template.bindings,
+      sourceGraph,
+      bindings,
       {
         firstFrame,
         lastFrame,
@@ -119,11 +130,10 @@ router.post(
     if (!result || !result.prompt_id) throw bad('ComfyUI did not return a prompt_id', 502);
 
     const job = jobs.newJob(result.prompt_id, params, result.number);
-    // Remember the prompt_id on the shot so the video survives a page reload.
-    shot.job = { promptId: job.promptId, status: job.status, videos: [], queuedAt: new Date().toISOString() };
+    shot.job = shotjobs.queued(job.promptId);
     projects.persist(req.user, project);
 
-    res.json({ promptId: job.promptId, job });
+    res.json({ promptId: job.promptId, job: shot.job, shot });
   })
 );
 
@@ -148,6 +158,42 @@ router.post(
   asyncRoute(async (req, res) => {
     await comfy.interrupt();
     res.json({ ok: true });
+  })
+);
+
+router.get(
+  '/videos',
+  asyncRoute(async (req, res) => {
+    const relative = String(req.query.file || '').replace(/\\/g, '/');
+    if (!relative) throw bad('file is required');
+    const ownerPrefix = `${archive.safeSegment(req.user, 'user')}_`;
+    if (!relative.split('/')[0].startsWith(ownerPrefix)) throw bad('Video not found', 404);
+
+    const file = archive.resolveRelative(relative);
+    if (!fs.existsSync(file)) throw bad('Video not found', 404);
+    const stat = fs.statSync(file);
+    const range = req.headers.range;
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${path.basename(file)}"`);
+
+    if (!range) {
+      res.setHeader('Content-Length', stat.size);
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    if (!match) return res.status(416).end();
+    const start = match[1] ? Number(match[1]) : 0;
+    const end = match[2] ? Math.min(Number(match[2]), stat.size - 1) : stat.size - 1;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= stat.size) {
+      return res.status(416).end();
+    }
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+    res.setHeader('Content-Length', end - start + 1);
+    fs.createReadStream(file, { start, end }).pipe(res);
   })
 );
 

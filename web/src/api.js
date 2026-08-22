@@ -72,6 +72,10 @@ export const api = {
     del(
       `/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/shots/${encodeURIComponent(shotId)}`
     ),
+  reorderShots: (projectId, chapterId, shotIds) =>
+    put(`/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/shots/reorder`, { shotIds }),
+  mergeShots: (projectId, chapterId) =>
+    post(`/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/shots/merge`),
 
   // generation
   generate: (data) => post('/api/generate', data),

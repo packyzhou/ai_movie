@@ -57,25 +57,25 @@ function clampInt(value, spec, label) {
   return Math.round(n / step) * step;
 }
 
-function validate(params) {
+function validate(params, bindings = {}) {
   const prompt = String(params.prompt || '').trim();
   if (!prompt) throw new Error('prompt is required');
-  if (!params.firstFrame) throw new Error('first frame image is required');
-  if (!params.lastFrame) throw new Error('last frame image is required');
+  if (bindings.firstFrame && !params.firstFrame) throw new Error('first frame image is required');
+  if (bindings.lastFrame && !params.lastFrame) throw new Error('last frame image is required');
 
   const durSpec = limits.duration || { min: 1, max: 10 };
   const duration = Number(params.duration);
-  if (!Number.isFinite(duration) || duration < durSpec.min || duration > durSpec.max) {
+  if (bindings.duration && (!Number.isFinite(duration) || duration < durSpec.min || duration > durSpec.max)) {
     throw new Error(`duration must be between ${durSpec.min} and ${durSpec.max} seconds`);
   }
 
   return {
     prompt,
-    firstFrame: String(params.firstFrame),
-    lastFrame: String(params.lastFrame),
+    firstFrame: params.firstFrame ? String(params.firstFrame) : '',
+    lastFrame: params.lastFrame ? String(params.lastFrame) : '',
     width: clampInt(params.width, limits.width || {}, 'width'),
     height: clampInt(params.height, limits.height || {}, 'height'),
-    duration,
+    duration: Number.isFinite(duration) ? duration : durSpec.default,
   };
 }
 
@@ -85,7 +85,7 @@ function validate(params) {
  * parameters go. Frame values must already be names known to ComfyUI's input folder.
  */
 function build(graph, bindings, params, { seed, seedBinding } = {}) {
-  const clean = validate(params);
+  const clean = validate(params, bindings);
   const out = JSON.parse(JSON.stringify(graph));
 
   for (const [key, binding] of Object.entries(bindings || {})) {

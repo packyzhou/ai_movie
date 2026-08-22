@@ -16,11 +16,18 @@ const STATUS_TEXT = {
 
 const percent = computed(() => Math.round((props.job?.progress || 0) * 100));
 const active = computed(() => props.job && (props.job.status === 'queued' || props.job.status === 'running'));
+const videos = computed(() => {
+  if (props.job?.videoUrl) {
+    return [{ url: props.job.videoUrl, filename: (props.job.file || 'video.mp4').split('/').pop() }];
+  }
+  return props.job?.videos || [];
+});
 
 const elapsed = computed(() => {
   if (!props.job) return '';
-  const end = props.job.finishedAt || Date.now();
-  return `${Math.max(0, Math.round((end - props.job.createdAt) / 1000))}s`;
+  const start = new Date(props.job.queuedAt || props.job.createdAt || Date.now()).getTime();
+  const end = new Date(props.job.finishedAt || Date.now()).getTime();
+  return `${Math.max(0, Math.round((end - start) / 1000))}s`;
 });
 </script>
 
@@ -48,8 +55,8 @@ const elapsed = computed(() => {
 
     <p v-if="job.error" class="error">{{ job.error }}</p>
 
-    <div v-if="job.videos && job.videos.length" class="results">
-      <button v-for="v in job.videos" :key="v.url" type="button" class="result" @click="$emit('preview', v)">
+    <div v-if="videos.length" class="results">
+      <button v-for="v in videos" :key="v.url" type="button" class="result" @click="$emit('preview', v)">
         <video :src="v.url" muted preload="metadata" />
         <span class="play">▶</span>
         <span class="name">{{ v.filename }}</span>

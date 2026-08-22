@@ -34,6 +34,8 @@ const error = ref('');
 const notice = ref('');
 const saving = ref(false);
 const generating = ref(false);
+const merging = ref(false);
+const draggingId = ref('');
 
 const job = ref(null);
 const previewing = ref(null);
@@ -51,6 +53,23 @@ const active = computed(() => job.value && (job.value.status === 'queued' || job
 
 // Both frames present -> image-to-video; prompt only -> text-to-video.
 const mode = computed(() => (draft.firstFrame && draft.lastFrame ? '图生视频' : '文生视频'));
+
+function stateOf(shot) {
+  const status = shot.job?.status || 'pending';
+  if (status === 'queued' || status === 'running') return 'running';
+  if (status === 'completed') return 'completed';
+  if (status === 'failed' || status === 'cancelled') return 'failed';
+  return 'pending';
+}
+
+function percentOf(shot) {
+  return Math.round((shot.job?.progress || 0) * 100);
+}
+
+function previewOf(shot) {
+  if (!shot.job?.videoUrl) return null;
+  return { url: shot.job.videoUrl, filename: (shot.job.file || shot.name).split('/').pop() };
+}
 
 const PRESETS = [
   { label: '16:9 · 1280×704', width: 1280, height: 704 },
@@ -75,11 +94,10 @@ function loadDraft(shot) {
 
 function select(shot) {
   stopPolling();
-  job.value = null;
   selectedId.value = shot.shotId;
   loadDraft(shot);
-  // A previously queued render can be re-attached by its prompt_id.
-  if (shot.job && shot.job.promptId) startPolling(shot.job.promptId);
+  job.value = shot.job || null;
+  if (stateOf(shot) === 'running') startPolling();
 }
 
 async function refreshLibrary() {
@@ -97,6 +115,7 @@ async function load() {
     document.title = `${res.chapter.title} · ${res.project.name}`;
     await refreshLibrary();
     if (shots.value.length) select(shots.value[0]);
+    if (shots.value.some((shot) => stateOf(shot) === 'running')) startPolling();
   } catch (err) {
     error.value = err.message;
   } finally {
@@ -179,7 +198,9 @@ async function generate() {
       shotId: draft.shotId,
     });
     job.value = res.job;
-    startPolling(res.promptId);
+    const idx = shots.value.findIndex((shot) => shot.shotId === res.shot.shotId);
+    if (idx >= 0) chapter.value.shots[idx] = res.shot;
+    startPolling();
   } catch (err) {
     error.value = err.message;
   } finally {
@@ -187,18 +208,19 @@ async function generate() {
   }
 }
 
-function startPolling(promptId) {
+function startPolling() {
   stopPolling();
   const tick = async () => {
     try {
-      const res = await api.job(promptId);
-      job.value = res.job;
-      if (!active.value) {
+      const res = await api.chapter(props.projectId, props.chapterId);
+      chapter.value = res.chapter;
+      const current = shots.value.find((shot) => shot.shotId === selectedId.value);
+      job.value = current?.job || null;
+      if (!shots.value.some((shot) => stateOf(shot) === 'running')) {
         stopPolling();
         return;
       }
-    } catch (err) {
-      // A prompt_id ComfyUI no longer knows about is not worth surfacing.
+    } catch (_) {
       stopPolling();
       return;
     }
@@ -210,6 +232,49 @@ function startPolling(promptId) {
 function stopPolling() {
   if (pollTimer) clearTimeout(pollTimer);
   pollTimer = null;
+}
+
+function dragStart(shot, event) {
+  draggingId.value = shot.shotId;
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', shot.shotId);
+}
+
+async function dropOn(target) {
+  const sourceId = draggingId.value;
+  draggingId.value = '';
+  if (!sourceId || sourceId === target.shotId) return;
+  const ordered = [...shots.value];
+  const from = ordered.findIndex((shot) => shot.shotId === sourceId);
+  const to = ordered.findIndex((shot) => shot.shotId === target.shotId);
+  if (from < 0 || to < 0) return;
+  const [moved] = ordered.splice(from, 1);
+  ordered.splice(to, 0, moved);
+  chapter.value.shots = ordered.map((shot, index) => ({ ...shot, seq: index + 1 }));
+  try {
+    const res = await api.reorderShots(props.projectId, props.chapterId, ordered.map((shot) => shot.shotId));
+    chapter.value.shots = res.shots;
+  } catch (err) {
+    error.value = err.message;
+    await load();
+  }
+}
+
+async function mergeShots() {
+  if (!confirm('将按当前顺序合成全部镜头，并删除原镜头及其视频。是否继续？')) return;
+  merging.value = true;
+  error.value = '';
+  stopPolling();
+  try {
+    const { shot } = await api.mergeShots(props.projectId, props.chapterId);
+    chapter.value.shots = [shot];
+    select(shot);
+    previewing.value = previewOf(shot);
+  } catch (err) {
+    error.value = err.message;
+  } finally {
+    merging.value = false;
+  }
 }
 
 async function cancel(promptId) {
@@ -242,17 +307,43 @@ onUnmounted(stopPolling);
       <aside class="shots">
         <div class="shots-head">
           <span>镜头列表</span>
-          <button type="button" class="ghost-btn small" @click="addOpen = true">+ 添加</button>
+          <div class="head-actions">
+            <button type="button" class="ghost-btn small" :disabled="merging || shots.length < 2" @click="mergeShots">
+              {{ merging ? '合成中…' : '合成' }}
+            </button>
+            <button type="button" class="ghost-btn small" @click="addOpen = true">+ 添加</button>
+          </div>
         </div>
         <ul>
-          <li v-for="s in shots" :key="s.shotId">
+          <li
+            v-for="s in shots"
+            :key="s.shotId"
+            draggable="true"
+            :class="{ dragging: draggingId === s.shotId }"
+            @dragstart="dragStart(s, $event)"
+            @dragend="draggingId = ''"
+            @dragover.prevent
+            @drop.prevent="dropOn(s)"
+          >
             <button type="button" class="shot" :class="{ active: s.shotId === selectedId }" @click="select(s)">
-              <span class="seq">{{ s.seq }}</span>
+              <span class="seq" :class="stateOf(s)">{{ s.seq }}</span>
               <span class="text">
                 <span class="nm">{{ s.name }}</span>
-                <span class="rm muted">{{ s.remark || '无备注' }}</span>
+                <span class="rm muted">任务：{{ s.job?.promptId || '未开始' }}</span>
+                <span v-if="stateOf(s) === 'running'" class="progress-text">进度 {{ percentOf(s) }}%</span>
+                <span v-else-if="stateOf(s) === 'failed'" class="shot-error" :title="s.job?.error || s.job?.message">
+                  {{ s.job?.error || s.job?.message || '执行失败' }}
+                </span>
               </span>
-              <span v-if="s.job" class="dot" :class="s.job.status" title="已提交过生成" />
+            </button>
+            <button
+              v-if="stateOf(s) === 'completed' && previewOf(s)"
+              type="button"
+              class="preview-btn"
+              title="预览视频"
+              @click="previewing = previewOf(s)"
+            >
+              预览
             </button>
             <button type="button" class="del" title="删除镜头" @click="removeShot(s)">✕</button>
           </li>
@@ -416,7 +507,7 @@ onUnmounted(stopPolling);
 }
 .body {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: 340px minmax(0, 1fr);
   align-items: start;
 }
 .shots {
@@ -434,6 +525,10 @@ onUnmounted(stopPolling);
   font-size: 13px;
   color: var(--muted);
 }
+.head-actions {
+  display: flex;
+  gap: 6px;
+}
 .shots ul {
   list-style: none;
   margin: 0;
@@ -446,6 +541,9 @@ onUnmounted(stopPolling);
   display: flex;
   align-items: stretch;
   gap: 4px;
+}
+.shots li.dragging {
+  opacity: 0.45;
 }
 .shot {
   flex: 1;
@@ -470,15 +568,24 @@ onUnmounted(stopPolling);
 }
 .seq {
   flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-radius: 6px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: #6b7280;
   display: grid;
   place-items: center;
   font-size: 11px;
-  color: var(--muted);
+  color: #fff;
+  font-weight: 700;
+}
+.seq.completed {
+  background: #16a34a;
+}
+.seq.running {
+  background: #2563eb;
+}
+.seq.failed {
+  background: #dc2626;
 }
 .shot .text {
   min-width: 0;
@@ -494,6 +601,33 @@ onUnmounted(stopPolling);
 }
 .rm {
   font-size: 11.5px;
+}
+.progress-text,
+.shot-error {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.progress-text {
+  color: #60a5fa;
+}
+.shot-error {
+  color: #f87171;
+}
+.preview-btn {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 4px 6px;
+  border: 1px solid #16a34a;
+  border-radius: 6px;
+  background: transparent;
+  color: #4ade80;
+  cursor: pointer;
+  font-size: 11px;
+}
+.preview-btn:hover {
+  background: rgba(22, 163, 74, 0.14);
 }
 .dot {
   flex: 0 0 auto;

@@ -4,6 +4,9 @@ const express = require('express');
 const crypto = require('crypto');
 const store = require('../store');
 const workflow = require('../workflow');
+const shotjobs = require('../shotjobs');
+const archive = require('../archive');
+const merger = require('../merge');
 const { asyncRoute, bad, pageQuery, requireText } = require('./helpers');
 
 const router = express.Router();
@@ -138,6 +141,12 @@ router.get(
   '/:projectId/chapters/:chapterId',
   asyncRoute(async (req, res) => {
     const { project, chapter } = locate(req.user, req.params.projectId, req.params.chapterId);
+    const changed = await shotjobs.refreshChapter(chapter, {
+      username: req.user,
+      projectId: project.projectId,
+      chapterId: chapter.chapterId,
+    });
+    if (changed) persist(req.user, project);
     res.json({
       chapter,
       project: { projectId: project.projectId, name: project.name, templateId: project.templateId, background: project.background },
@@ -159,7 +168,7 @@ router.post(
       lastFrame: '',
       prompt: '',
       ...defaults(),
-      job: null,
+      job: shotjobs.emptyJob(),
     };
     chapter.shots.push(shot);
     renumber(chapter.shots);
@@ -168,7 +177,78 @@ router.post(
   })
 );
 
-const SHOT_FIELDS = ['name', 'remark', 'firstFrame', 'lastFrame', 'prompt', 'width', 'height', 'duration', 'job'];
+router.post(
+  '/:projectId/chapters/:chapterId/shots/merge',
+  asyncRoute(async (req, res) => {
+    const { project, chapter } = locate(req.user, req.params.projectId, req.params.chapterId);
+    if (chapter.shots.length < 2) throw bad('至少需要两个镜头才能合成');
+    const sources = chapter.shots.map((shot) => ({ shot, job: shotjobs.normalize(shot.job) }));
+    const unavailable = sources.find(({ job }) => job.status !== shotjobs.COMPLETED || !job.file);
+    if (unavailable) throw bad(`镜头「${unavailable.shot.name}」尚未生成完成，无法合成`);
+
+    const date = new Date();
+    const shotId = crypto.randomUUID();
+    const saved = await merger.mergeVideos(sources.map(({ job }) => job.file), {
+      username: req.user,
+      projectId: project.projectId,
+      chapterId: chapter.chapterId,
+      shotId,
+      date,
+    });
+    const name = `merge_${archive.stamp(date)}`;
+    const merged = {
+      shotId,
+      seq: 1,
+      name,
+      remark: `由 ${sources.length} 个镜头按顺序合成`,
+      firstFrame: '',
+      lastFrame: '',
+      prompt: '',
+      width: sources[0].shot.width,
+      height: sources[0].shot.height,
+      duration: sources.reduce((total, item) => total + (Number(item.shot.duration) || 0), 0),
+      job: {
+        ...shotjobs.emptyJob(),
+        promptId: `merge-${shotId}`,
+        status: shotjobs.COMPLETED,
+        progress: 1,
+        message: '合成完成',
+        queuedAt: date.toISOString(),
+        finishedAt: new Date().toISOString(),
+        ...saved,
+      },
+    };
+
+    chapter.shots = [merged];
+    try {
+      persist(req.user, project);
+    } catch (err) {
+      await archive.remove(saved.file);
+      throw err;
+    }
+    await Promise.all(sources.map(({ job }) => archive.remove(job.file)));
+    res.json({ shot: merged, removed: sources.length });
+  })
+);
+
+router.put(
+  '/:projectId/chapters/:chapterId/shots/reorder',
+  asyncRoute(async (req, res) => {
+    const { project, chapter } = locate(req.user, req.params.projectId, req.params.chapterId);
+    const shotIds = Array.isArray(req.body && req.body.shotIds) ? req.body.shotIds.map(String) : [];
+    const currentIds = chapter.shots.map((shot) => shot.shotId);
+    if (shotIds.length !== currentIds.length || new Set(shotIds).size !== currentIds.length ||
+      currentIds.some((id) => !shotIds.includes(id))) {
+      throw bad('shotIds must contain every chapter shot exactly once');
+    }
+    const byId = new Map(chapter.shots.map((shot) => [shot.shotId, shot]));
+    chapter.shots = renumber(shotIds.map((id) => byId.get(id)));
+    persist(req.user, project);
+    res.json({ shots: chapter.shots });
+  })
+);
+
+const SHOT_FIELDS = ['name', 'remark', 'firstFrame', 'lastFrame', 'prompt', 'width', 'height', 'duration'];
 
 router.put(
   '/:projectId/chapters/:chapterId/shots/:shotId',
@@ -195,9 +275,10 @@ router.delete(
     const { project, chapter } = locate(req.user, req.params.projectId, req.params.chapterId);
     const idx = chapter.shots.findIndex((s) => s.shotId === req.params.shotId);
     if (idx === -1) throw bad('Shot not found', 404);
-    chapter.shots.splice(idx, 1);
+    const [removed] = chapter.shots.splice(idx, 1);
     renumber(chapter.shots);
     persist(req.user, project);
+    await archive.remove(removed.job && removed.job.file);
     res.json({ ok: true });
   })
 );

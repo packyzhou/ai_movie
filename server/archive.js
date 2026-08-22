@@ -100,8 +100,7 @@ async function saveFromComfy(descriptor, { username, projectId, chapterId, shotI
   const dir = chapterDir(username, projectId, chapterId);
   await fsp.mkdir(dir, { recursive: true });
 
-  const ext = path.extname(descriptor.filename) || '.mp4';
-  const target = path.join(dir, buildName(shotId, ext));
+  const target = path.join(dir, buildName(shotId, '.mp4'));
 
   const upstream = await comfy.viewStream({
     filename: descriptor.filename,
@@ -126,7 +125,7 @@ async function saveFromComfy(descriptor, { username, projectId, chapterId, shotI
 
   await fsp.rename(tmp, target);
   const relative = toRelative(target);
-  return { file: relative, url: videoUrlFor(relative), bytes: sizeOf(relative) };
+  return { file: relative, url: videoUrlFor(relative), videoUrl: videoUrlFor(relative), bytes: sizeOf(relative) };
 }
 
 /** Best-effort delete of an archived file - a missing file is not an error. */
