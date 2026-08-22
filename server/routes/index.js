@@ -15,7 +15,13 @@ router.post('/login', (req, res) => {
   const { username, password } = req.body || {};
   const token = auth.login(String(username || ''), String(password || ''));
   if (!token) return res.status(401).json({ error: 'Wrong username or password' });
-  templates.seedDefault(username);
+  // Seeding the sample template is a convenience, never a reason to fail a
+  // valid login - a broken/absent built-in workflow must not lock the user out.
+  try {
+    templates.seedDefault(username);
+  } catch (err) {
+    console.error('[login] seedDefault skipped:', err.message);
+  }
   res.cookie(auth.COOKIE, token, { httpOnly: true, sameSite: 'lax', maxAge: config.sessionTtlMs });
   res.json({ username, token });
 });

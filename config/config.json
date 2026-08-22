@@ -5,5 +5,8 @@
   "workflowDir": "api",
   "resourcesDir": "resources/images",
   "dataDir": "resources/datas",
+  "outputDir": "resources/output",
+  "ffmpegPath": "ffmpeg",
+  "ffprobePath": "ffprobe",
   "sessionTtlMs": 43200000
 }

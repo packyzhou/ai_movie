@@ -22,7 +22,10 @@ function summarize(row) {
  */
 function seedDefault(username) {
   if (store.templates.list(username).length) return;
+  // Optional: a fresh clone ships no built-in workflow (./api/<file> is git-ignored).
+  // Without one we simply leave the list empty instead of failing the caller.
   const graph = workflow.loadBuiltinTemplate();
+  if (!graph) return;
   const templateId = 'builtin-minimax-h3';
   const { bindings, seed, missing } = tpl.deriveBindings(graph);
   tpl.save(templateId, graph, { templateId, name: 'MiniMax H3 首尾帧生视频', owner: username });
@@ -41,7 +44,11 @@ function seedDefault(username) {
 router.get(
   '/',
   asyncRoute(async (req, res) => {
-    seedDefault(req.user);
+    try {
+      seedDefault(req.user);
+    } catch (err) {
+      console.error('[templates] seedDefault skipped:', err.message);
+    }
     const result = store.templates.page(req.user, pageQuery(req, ['name', 'templateId', 'remark']));
     res.json({ ...result, items: result.items.map(summarize) });
   })

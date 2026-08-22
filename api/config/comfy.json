@@ -1,0 +1,14 @@
+{
+  "baseUrl": "http://127.0.0.1:8188",
+  "timeoutMs": 60000,
+  "pollIntervalMs": 1500,
+  "endpoints": {
+    "prompt": "/prompt",
+    "history": "/history",
+    "queue": "/queue",
+    "view": "/view",
+    "upload": "/upload/image",
+    "interrupt": "/interrupt",
+    "ws": "/ws"
+  }
+}

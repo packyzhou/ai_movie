@@ -23,11 +23,26 @@ function setInput(graph, bindingPath, value) {
   node.inputs[field] = value;
 }
 
-/** The built-in workflow shipped in ./api, used as the seed template on first run. */
+/**
+ * The built-in workflow shipped in ./api, used as the seed template on first run.
+ * The file is optional: a fresh clone has no ./api/<name>.json (it is git-ignored),
+ * and `api/config/workflow.json` may not name one at all. Returning null instead of
+ * throwing keeps login working - the user just starts with an empty template list.
+ */
+function builtinTemplatePath() {
+  const name = config.workflow && config.workflow.template;
+  if (typeof name !== 'string' || !name.trim()) return null;
+  return path.join(config.workflowDir, path.basename(name.trim()));
+}
+
 function loadBuiltinTemplate() {
-  const name = config.workflow.template;
-  const file = path.join(config.workflowDir, path.basename(name));
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
+  const file = builtinTemplatePath();
+  if (!file || !fs.existsSync(file)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    throw new Error(`Built-in template ${path.basename(file)} is not valid JSON: ${err.message}`);
+  }
 }
 
 const limits = config.workflow.limits || {};
@@ -87,4 +102,4 @@ function build(graph, bindings, params, { seed, seedBinding } = {}) {
   return { graph: out, params: clean };
 }
 
-module.exports = { build, validate, loadBuiltinTemplate, limits, parsePath, setInput };
+module.exports = { build, validate, loadBuiltinTemplate, builtinTemplatePath, limits, parsePath, setInput };

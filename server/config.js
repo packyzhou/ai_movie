@@ -27,10 +27,27 @@ const config = {
   workflowDir: path.join(ROOT, app.workflowDir || 'api'),
   resourcesDir: path.join(ROOT, app.resourcesDir || 'resources/images'),
   dataDir: path.join(ROOT, app.dataDir || 'resources/datas'),
+  // Rendered videos are archived here as
+  // <outputDir>/<username>_<projectId>/<chapterId>/<shotId>_<YYYYMMDDHHmmss>.mp4
+  outputDir: path.join(ROOT, app.outputDir || 'resources/output'),
+  // Bare command names resolve through PATH; absolute paths are used as-is.
+  ffmpegPath: process.env.FFMPEG_PATH || app.ffmpegPath || 'ffmpeg',
+  ffprobePath: process.env.FFPROBE_PATH || app.ffprobePath || 'ffprobe',
 };
 
 config.comfy = readJson(path.join(config.apiConfigDir, 'comfy.json'), {});
 config.workflow = readJson(path.join(config.apiConfigDir, 'workflow.json'), {});
+
+// api/config/workflow.json is optional; without sane limits the UI would render
+// empty min/max/step attributes and the server would clamp against undefined.
+config.workflow.limits = Object.assign(
+  {
+    width: { min: 256, max: 1920, step: 32, default: 1280 },
+    height: { min: 256, max: 1920, step: 32, default: 704 },
+    duration: { min: 1, max: 10, step: 0.5, default: 5 },
+  },
+  config.workflow.limits
+);
 
 // account.json holds credentials and is git-ignored. Missing file is fatal:
 // running without it would silently expose the generator.
