@@ -105,4 +105,6 @@ module.exports = {
   paginate,
   projects: collection('myproject', 'projects', 'projectId'),
   templates: collection('template', 'templates', 'templateId'),
+  assets: collection('assets', 'assets', 'assetId'),
+  styles: collection('styles', 'styles', 'styleId'),
 };

@@ -26,7 +26,9 @@ const config = {
   apiConfigDir: path.join(ROOT, app.apiConfigDir || 'api/config'),
   workflowDir: path.join(ROOT, app.workflowDir || 'api'),
   resourcesDir: path.join(ROOT, app.resourcesDir || 'resources/images'),
+  assetsDir: path.join(ROOT, app.assetsDir || 'resources/assets'),
   dataDir: path.join(ROOT, app.dataDir || 'resources/datas'),
+  navigation: Array.isArray(app.navigation) ? app.navigation : [],
   // Rendered videos are archived here as
   // <outputDir>/<username>_<projectId>/<chapterId>/<shotId>_<YYYYMMDDHHmmss>.mp4
   outputDir: path.join(ROOT, app.outputDir || 'resources/output'),

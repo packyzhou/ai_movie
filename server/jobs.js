@@ -77,6 +77,13 @@ function collectOutputs(history) {
         });
       }
     }
+    const textValues = [out.text, out.texts].flatMap((value) =>
+      Array.isArray(value) ? value : value == null ? [] : [value]
+    );
+    textValues.forEach((value, index) => {
+      if (typeof value !== 'string' || !value.trim()) return;
+      files.push({ nodeId, kind: 'text', filename: `text_${nodeId}_${index + 1}.md`, text: value });
+    });
   }
   // A SaveVideo node reports under "videos"; prefer those, but fall back to
   // animated images so alternative save nodes still show up.

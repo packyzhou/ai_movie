@@ -6,6 +6,8 @@ const auth = require('../auth');
 const templates = require('./templates');
 const projects = require('./projects');
 const generate = require('./generate');
+const assets = require('./assets');
+const styles = require('./styles');
 
 const router = express.Router();
 
@@ -44,6 +46,8 @@ router.get('/me', (req, res) => {
 router.use(auth.requireAuth);
 router.use('/templates', templates.router);
 router.use('/projects', projects.router);
+router.use('/assets', assets);
+router.use('/styles', styles);
 router.use('/', generate);
 
 module.exports = router;

@@ -12,6 +12,7 @@ const loading = ref(false);
 const error = ref('');
 
 const templates = ref([]);
+const styles = ref([]);
 const modalOpen = ref(false);
 const saving = ref(false);
 const formError = ref('');
@@ -22,6 +23,7 @@ const form = reactive({
   name: '',
   templateId: '',
   background: '',
+  styleIds: [],
   chapters: [],
 });
 
@@ -45,9 +47,13 @@ async function load(page = list.page) {
   }
 }
 
-async function loadTemplates() {
-  const res = await api.templates({ page: 1, pageSize: 100 });
-  templates.value = res.items;
+async function loadReferences() {
+  const [templateData, styleData] = await Promise.all([
+    api.templates({ page: 1, pageSize: 100 }),
+    api.styles(),
+  ]);
+  templates.value = templateData.items;
+  styles.value = styleData.styles;
 }
 
 function resetForm() {
@@ -55,25 +61,27 @@ function resetForm() {
   form.name = '';
   form.templateId = templates.value.length ? templates.value[0].templateId : '';
   form.background = '';
+  form.styleIds = [];
   form.chapters = [{ key: uuid(), chapterId: '', title: '' }];
   formError.value = '';
 }
 
 async function openCreate() {
-  await loadTemplates();
+  await loadReferences();
   editingId.value = null;
   resetForm();
   modalOpen.value = true;
 }
 
 async function openEdit(row) {
-  await loadTemplates();
+  await loadReferences();
   const { project } = await api.project(row.projectId);
   editingId.value = project.projectId;
   form.projectId = project.projectId;
   form.name = project.name;
   form.templateId = project.templateId;
   form.background = project.background || '';
+  form.styleIds = [...(project.styleIds || [])];
   form.chapters = (project.chapters || []).map((c) => ({
     key: c.chapterId,
     chapterId: c.chapterId,
@@ -118,6 +126,7 @@ async function save() {
       name: form.name,
       templateId: form.templateId,
       background: form.background,
+      styleIds: form.styleIds,
       chapters,
     };
     if (isEdit.value) await api.updateProject(editingId.value, payload);
@@ -156,8 +165,13 @@ const templateName = (id) => {
   return t ? t.name : id;
 };
 
+const styleNames = (ids) => {
+  const selected = new Set(ids || []);
+  return styles.value.filter((style) => selected.has(style.styleId)).map((style) => style.name);
+};
+
 onMounted(async () => {
-  await loadTemplates();
+  await loadReferences();
   await load(1);
 });
 </script>
@@ -181,6 +195,7 @@ onMounted(async () => {
           <tr>
             <th>项目名称</th>
             <th>模板</th>
+            <th>风格</th>
             <th>章节</th>
             <th>镜头</th>
             <th>更新时间</th>

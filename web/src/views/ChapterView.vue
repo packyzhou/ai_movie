@@ -23,7 +23,11 @@ const draft = reactive({
   remark: '',
   firstFrame: '',
   lastFrame: '',
-  prompt: '',
+  promptBackground: '',
+  promptStoryboard: '',
+  promptNegative: '',
+  sourceShotIds: [],
+  mergedSourceShotIds: [],
   width: 1280,
   height: 704,
   duration: 5,
@@ -36,9 +40,16 @@ const saving = ref(false);
 const generating = ref(false);
 const merging = ref(false);
 const draggingId = ref('');
+const sourceDraggingId = ref('');
+const mergeSelection = ref([]);
+const chapterIntroduction = ref('');
+const lastSavedIntroduction = ref('');
+const savingChapter = ref(false);
 
 const job = ref(null);
 const previewing = ref(null);
+const scriptModalOpen = ref(false);
+const scriptModalMode = ref('preview');
 
 const addOpen = ref(false);
 const addForm = reactive({ name: '', remark: '' });
@@ -50,6 +61,19 @@ const shots = computed(() => (chapter.value && chapter.value.shots) || []);
 const selected = computed(() => shots.value.find((s) => s.shotId === selectedId.value) || null);
 const limits = computed(() => options.value.limits || {});
 const active = computed(() => job.value && (job.value.status === 'queued' || job.value.status === 'running'));
+const aggregatedPrompt = computed(() =>
+  [draft.promptBackground, draft.promptStoryboard, draft.promptNegative]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join('\n\n')
+);
+const mergedSources = computed(() => {
+  const byId = new Map(shots.value.map((shot) => [shot.shotId, shot]));
+  return (draft.sourceShotIds || []).map((id) => byId.get(id)).filter(Boolean);
+});
+const mergeOrderChanged = computed(() =>
+  JSON.stringify(draft.sourceShotIds || []) !== JSON.stringify(draft.mergedSourceShotIds || [])
+);
 
 // Both frames present -> image-to-video; prompt only -> text-to-video.
 const mode = computed(() => (draft.firstFrame && draft.lastFrame ? '图生视频' : '文生视频'));
@@ -71,6 +95,11 @@ function previewOf(shot) {
   return { url: shot.job.videoUrl, filename: (shot.job.file || shot.name).split('/').pop() };
 }
 
+const STORYBOARD_PLACEHOLDER = '要求：\n人物造型必须全程保持一致：所有画面中的人物必须严格锁定为图1（背面）与图2（正面）中的同一人。完全光头，无头发，胡须形状、密度、颜色完全一致；肤色、眼睛颜色、眉毛、面部轮廓完全一致；服装款式、颜色、褶皱完全一致。从背面、侧面、四分之三侧脸到正面，任何转身中间角度都不得出现五官变形、身份漂移或造型差异。\n\n场景描述：\n在广州塔下\n\n剧情：\n[0-2秒] 镜头一：图1局长面向镜头，说了一句“i will kill you”，然后从后面拿出一把枪对准镜头\n[2-3秒] 镜头二：开出一枪，子弹慢动作射向外星人，外星人在镜头后面，此时镜头需要转向\n[3-5秒]镜头三：子弹命中外星人额头，外星人倒地\n\n镜头：\n镜头聚焦图1人物，然后拉近枪口，人物高度过渡平滑。变形宽银幕镜头，浅景深，焦点始终保持在人物身上；镜头二慢动作，镜头顺着子弹方向移动；镜头三速度恢复正常\n\n音频：\n对白：“i will kill you“英语语速正常，背景音乐带压抑恐怖气氛\n\n字幕：\n字幕仅在人物说话时出现，约从0.5-2秒，中英双语字幕：中文在上，英文在下，居中位于画面下方三分之一处。中文：“我会杀了你”，英文：““i will kill you”，净电影级无衬线字体，无背景框，细描边保证可读性。除指定字幕外，画面无其他文字、标志或水印。
+
+';
+const NEGATIVE_PLACEHOLDER = '否定约束：\n无动画、卡通或过度CG感，保持实拍质感。无其他人、无复制人、无变形、无畸变。';
+
 const PRESETS = [
   { label: '16:9 · 1280×704', width: 1280, height: 704 },
   { label: '16:9 · 1920×1088', width: 1920, height: 1088 },
@@ -85,7 +114,11 @@ function loadDraft(shot) {
     remark: shot.remark || '',
     firstFrame: shot.firstFrame || '',
     lastFrame: shot.lastFrame || '',
-    prompt: shot.prompt || '',
+    promptBackground: shot.promptBackground ?? "故事背景：\n" + [project.value?.background, chapter.value?.introduction].filter(Boolean).join('\n---------------场景描述-------------\n'),
+    promptStoryboard: shot.promptStoryboard || STORYBOARD_PLACEHOLDER,
+    promptNegative: shot.promptNegative || NEGATIVE_PLACEHOLDER,
+    sourceShotIds: [...(shot.sourceShotIds || [])],
+    mergedSourceShotIds: [...(shot.mergedSourceShotIds || shot.sourceShotIds || [])],
     width: shot.width,
     height: shot.height,
     duration: shot.duration,
@@ -101,7 +134,17 @@ function select(shot) {
 }
 
 async function refreshLibrary() {
-  library.value = (await api.resources()).images;
+  const assets = await api.assets({ page: 1, pageSize: 100 });
+  library.value = assets.items.flatMap((asset) =>
+    (asset.resources || [])
+      .filter((resource) => resource.kind === 'image')
+      .map((resource, index) => ({
+        key: `${asset.assetId}-${index}`,
+        name: resource.name || `${asset.name}-${index + 1}.png`,
+        url: resource.path,
+        needsImport: true,
+      }))
+  );
 }
 
 async function load() {
@@ -111,6 +154,8 @@ async function load() {
     const [res, opts] = await Promise.all([api.chapter(props.projectId, props.chapterId), api.options()]);
     chapter.value = res.chapter;
     project.value = res.project;
+    chapterIntroduction.value = res.chapter.introduction || '';
+    lastSavedIntroduction.value = chapterIntroduction.value;
     options.value = opts;
     document.title = `${res.chapter.title} · ${res.project.name}`;
     await refreshLibrary();
@@ -123,10 +168,43 @@ async function load() {
   }
 }
 
+async function saveChapter() {
+  if (chapterIntroduction.value === lastSavedIntroduction.value) return true;
+  const currentBefore = selected.value;
+  const refreshBackground = currentBefore && currentBefore.promptBackgroundAuto !== false &&
+    draft.promptBackground === (currentBefore.promptBackground ?? [project.value?.background, lastSavedIntroduction.value].filter(Boolean).join('\n-------\n'));
+  savingChapter.value = true;
+  error.value = '';
+  try {
+    const { chapter: saved } = await api.updateChapter(props.projectId, props.chapterId, {
+      introduction: chapterIntroduction.value,
+    });
+    chapter.value = saved;
+    chapterIntroduction.value = saved.introduction || '';
+    lastSavedIntroduction.value = chapterIntroduction.value;
+    if (refreshBackground) {
+      const currentAfter = shots.value.find((shot) => shot.shotId === selectedId.value);
+      if (currentAfter) draft.promptBackground = currentAfter.promptBackground || '';
+    }
+    notice.value = '章节介绍已自动保存';
+    setTimeout(() => (notice.value = ''), 2000);
+    return true;
+  } catch (err) {
+    error.value = err.message;
+    return false;
+  } finally {
+    savingChapter.value = false;
+  }
+}
+
 async function addShot() {
   addError.value = '';
   if (!addForm.name.trim()) {
     addError.value = '请输入镜头名称';
+    return;
+  }
+  if (!(await saveChapter())) {
+    addError.value = '章节介绍保存失败，暂时无法添加镜头';
     return;
   }
   try {
@@ -163,16 +241,21 @@ async function save() {
   saving.value = true;
   error.value = '';
   try {
-    const { shot } = await api.updateShot(props.projectId, props.chapterId, draft.shotId, {
-      name: draft.name,
-      remark: draft.remark,
-      firstFrame: draft.firstFrame,
-      lastFrame: draft.lastFrame,
-      prompt: draft.prompt,
-      width: draft.width,
-      height: draft.height,
-      duration: draft.duration,
-    });
+    const payload = selected.value.merged
+      ? { name: draft.name, remark: draft.remark, sourceShotIds: draft.sourceShotIds }
+      : {
+          name: draft.name,
+          remark: draft.remark,
+          firstFrame: draft.firstFrame,
+          lastFrame: draft.lastFrame,
+          promptBackground: draft.promptBackground,
+          promptStoryboard: draft.promptStoryboard,
+          promptNegative: draft.promptNegative,
+          width: draft.width,
+          height: draft.height,
+          duration: draft.duration,
+        };
+    const { shot } = await api.updateShot(props.projectId, props.chapterId, draft.shotId, payload);
     const idx = shots.value.findIndex((s) => s.shotId === shot.shotId);
     if (idx >= 0) chapter.value.shots[idx] = shot;
     notice.value = '已保存';
@@ -184,6 +267,21 @@ async function save() {
   } finally {
     saving.value = false;
   }
+}
+
+function openScriptPreview() {
+  scriptModalMode.value = 'preview';
+  scriptModalOpen.value = true;
+}
+
+function requestGenerate() {
+  scriptModalMode.value = 'generate';
+  scriptModalOpen.value = true;
+}
+
+async function confirmGenerate() {
+  scriptModalOpen.value = false;
+  await generate();
 }
 
 async function generate() {
@@ -260,14 +358,25 @@ async function dropOn(target) {
   }
 }
 
-async function mergeShots() {
-  if (!confirm('将按当前顺序合成全部镜头，并删除原镜头及其视频。是否继续？')) return;
+async function mergeShots(targetShot = null) {
+  const shotIds = targetShot
+    ? [...draft.sourceShotIds]
+    : shots.value.filter((shot) => mergeSelection.value.includes(shot.shotId)).map((shot) => shot.shotId);
+  if (shotIds.length < 2) {
+    error.value = '请先从镜头列表选择至少两个已完成镜头';
+    return;
+  }
+  if (!confirm(`确认按当前顺序合成选中的 ${shotIds.length} 个镜头？原镜头将保留并置灰。`)) return;
   merging.value = true;
   error.value = '';
   stopPolling();
   try {
-    const { shot } = await api.mergeShots(props.projectId, props.chapterId);
-    chapter.value.shots = [shot];
+    const { shot, shots: updated } = await api.mergeShots(props.projectId, props.chapterId, {
+      shotIds,
+      targetShotId: targetShot?.shotId,
+    });
+    chapter.value.shots = updated;
+    mergeSelection.value = [];
     select(shot);
     previewing.value = previewOf(shot);
   } catch (err) {
@@ -275,6 +384,31 @@ async function mergeShots() {
   } finally {
     merging.value = false;
   }
+}
+
+function toggleMergeSelection(shotId) {
+  mergeSelection.value = mergeSelection.value.includes(shotId)
+    ? mergeSelection.value.filter((id) => id !== shotId)
+    : [...mergeSelection.value, shotId];
+}
+
+function sourceDragStart(shotId, event) {
+  sourceDraggingId.value = shotId;
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', shotId);
+}
+
+function dropSource(targetId) {
+  const sourceId = sourceDraggingId.value;
+  sourceDraggingId.value = '';
+  if (!sourceId || sourceId === targetId) return;
+  const order = [...draft.sourceShotIds];
+  const from = order.indexOf(sourceId);
+  const to = order.indexOf(targetId);
+  if (from < 0 || to < 0) return;
+  const [moved] = order.splice(from, 1);
+  order.splice(to, 0, moved);
+  draft.sourceShotIds = order;
 }
 
 async function cancel(promptId) {
@@ -302,14 +436,28 @@ onUnmounted(stopPolling);
 
     <p v-if="error" class="error page-error">{{ error }}</p>
 
+    <section v-if="chapter" class="chapter-introduction">
+      <label>
+        <span>章节介绍 <small class="muted">（离开输入框后自动保存）</small></span>
+        <textarea
+          v-model="chapterIntroduction"
+          rows="3"
+          maxlength="5000"
+          placeholder="输入本章节的背景、人物和剧情概述，新增镜头会复用该内容。"
+          @blur="saveChapter"
+        />
+      </label>
+      <span v-if="savingChapter" class="muted auto-saving">自动保存中…</span>
+    </section>
+
     <div class="body">
       <!-- left: shot list -->
       <aside class="shots">
         <div class="shots-head">
           <span>镜头列表</span>
           <div class="head-actions">
-            <button type="button" class="ghost-btn small" :disabled="merging || shots.length < 2" @click="mergeShots">
-              {{ merging ? '合成中…' : '合成' }}
+            <button type="button" class="ghost-btn small" :disabled="merging || mergeSelection.length < 2" @click="mergeShots()">
+              {{ merging ? '合成中…' : `合成 (${mergeSelection.length})` }}
             </button>
             <button type="button" class="ghost-btn small" @click="addOpen = true">+ 添加</button>
           </div>
@@ -319,17 +467,26 @@ onUnmounted(stopPolling);
             v-for="s in shots"
             :key="s.shotId"
             draggable="true"
-            :class="{ dragging: draggingId === s.shotId }"
+            :class="{ dragging: draggingId === s.shotId, disabled: s.disabled }"
             @dragstart="dragStart(s, $event)"
             @dragend="draggingId = ''"
             @dragover.prevent
             @drop.prevent="dropOn(s)"
           >
+            <input
+              v-if="!s.merged"
+              type="checkbox"
+              class="merge-check"
+              :checked="mergeSelection.includes(s.shotId)"
+              :disabled="s.disabled || stateOf(s) !== 'completed' || !previewOf(s)"
+              title="选择参与合成"
+              @click.stop="toggleMergeSelection(s.shotId)"
+            />
             <button type="button" class="shot" :class="{ active: s.shotId === selectedId }" @click="select(s)">
               <span class="seq" :class="stateOf(s)">{{ s.seq }}</span>
               <span class="text">
-                <span class="nm">{{ s.name }}</span>
-                <span class="rm muted">任务：{{ s.job?.promptId || '未开始' }}</span>
+                <span class="nm">{{ s.name }} <small v-if="s.merged" class="merged-label">合成</small></span>
+                <span class="rm muted">{{ s.disabled ? '已用于合成' : `任务：${s.job?.promptId || '未开始'}` }}</span>
                 <span v-if="stateOf(s) === 'running'" class="progress-text">进度 {{ percentOf(s) }}%</span>
                 <span v-else-if="stateOf(s) === 'failed'" class="shot-error" :title="s.job?.error || s.job?.message">
                   {{ s.job?.error || s.job?.message || '执行失败' }}
@@ -345,7 +502,7 @@ onUnmounted(stopPolling);
             >
               预览
             </button>
-            <button type="button" class="del" title="删除镜头" @click="removeShot(s)">✕</button>
+            <button v-if="!s.disabled" type="button" class="del" title="删除镜头" @click="removeShot(s)">✕</button>
           </li>
         </ul>
         <p v-if="!shots.length && !loading" class="muted small pad">还没有镜头，点击「+ 添加」创建第一个。</p>
@@ -361,7 +518,7 @@ onUnmounted(stopPolling);
           <section class="card form">
             <div class="form-head">
               <h2>{{ draft.name }}</h2>
-              <span class="badge">{{ mode }}</span>
+              <span class="badge">{{ selected.merged ? '合成镜头' : mode }}</span>
             </div>
 
             <div class="row2">
@@ -375,75 +532,117 @@ onUnmounted(stopPolling);
               </label>
             </div>
 
-            <div class="frames">
-              <ImageField label="首帧 (first frame)" v-model="draft.firstFrame" :library="library" @uploaded="refreshLibrary" />
-              <ImageField label="尾帧 (last frame)" v-model="draft.lastFrame" :library="library" @uploaded="refreshLibrary" />
-            </div>
+            <template v-if="selected.merged">
+              <div class="source-head">
+                <span>原镜头列表</span>
+                <small class="muted">拖拽可调整重新合成顺序</small>
+              </div>
+              <div class="source-list">
+                <div
+                  v-for="source in mergedSources"
+                  :key="source.shotId"
+                  class="source-item"
+                  :class="{ dragging: sourceDraggingId === source.shotId }"
+                  draggable="true"
+                  @dragstart="sourceDragStart(source.shotId, $event)"
+                  @dragend="sourceDraggingId = ''"
+                  @dragover.prevent
+                  @drop.prevent="dropSource(source.shotId)"
+                >
+                  <span class="source-order">{{ draft.sourceShotIds.indexOf(source.shotId) + 1 }}</span>
+                  <span class="source-name">{{ source.name }}</span>
+                  <button v-if="previewOf(source)" type="button" class="link" @click="previewing = previewOf(source)">预览</button>
+                </div>
+              </div>
+              <div class="actions">
+                <button type="button" class="ghost-btn" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
+                <button type="button" class="primary" :disabled="merging || !mergeOrderChanged" @click="mergeShots(selected)">
+                  {{ merging ? '重新合成中…' : '重新合成' }}
+                </button>
+              </div>
+            </template>
 
-            <label>
-              <span>剧本内容提示词 (prompt)</span>
-              <textarea v-model="draft.prompt" rows="9" placeholder="描述镜头、人物、动作、运镜、音频与字幕…" />
-            </label>
+            <template v-else>
+              <div class="frames">
+                <ImageField label="首帧 (first frame)" v-model="draft.firstFrame" :library="library" @uploaded="refreshLibrary" />
+                <ImageField label="尾帧 (last frame)" v-model="draft.lastFrame" :library="library" @uploaded="refreshLibrary" />
+              </div>
 
-            <div class="presets">
-              <button
-                v-for="p in PRESETS"
-                :key="p.label"
-                type="button"
-                class="chip"
-                @click="((draft.width = p.width), (draft.height = p.height))"
-              >
-                {{ p.label }}
-              </button>
-            </div>
+              <div class="prompt-parts">
+                <label>
+                  <span>背景（故事背景 + 章节介绍）</span>
+                  <textarea v-model="draft.promptBackground" rows="6" placeholder="项目故事背景\n-------\n章节介绍" />
+                </label>
+                <label>
+                  <span>故事板</span>
+                  <textarea v-model="draft.promptStoryboard" rows="12" :placeholder="STORYBOARD_PLACEHOLDER" />
+                </label>
+                <label>
+                  <span>约束（负向提示词）</span>
+                  <textarea v-model="draft.promptNegative" rows="4" :placeholder="NEGATIVE_PLACEHOLDER" />
+                </label>
+              </div>
 
-            <div class="row3">
-              <label>
-                <span>宽度 (width)</span>
-                <input
-                  v-model.number="draft.width"
-                  type="number"
-                  :min="limits.width?.min ?? 256"
-                  :max="limits.width?.max ?? 1920"
-                  :step="limits.width?.step ?? 32"
-                />
-              </label>
-              <label>
-                <span>高度 (height)</span>
-                <input
-                  v-model.number="draft.height"
-                  type="number"
-                  :min="limits.height?.min ?? 256"
-                  :max="limits.height?.max ?? 1920"
-                  :step="limits.height?.step ?? 32"
-                />
-              </label>
-              <label>
-                <span>时长 (duration, 秒)</span>
-                <input
-                  v-model.number="draft.duration"
-                  type="number"
-                  :min="limits.duration?.min ?? 1"
-                  :max="limits.duration?.max ?? 10"
-                  :step="limits.duration?.step ?? 0.5"
-                />
-              </label>
-            </div>
+              <div class="presets">
+                <button
+                  v-for="p in PRESETS"
+                  :key="p.label"
+                  type="button"
+                  class="chip"
+                  @click="((draft.width = p.width), (draft.height = p.height))"
+                >
+                  {{ p.label }}
+                </button>
+              </div>
 
-            <div class="actions">
-              <button type="button" class="ghost-btn" :disabled="saving" @click="save">
-                {{ saving ? '保存中…' : '保存' }}
-              </button>
-              <button type="button" class="primary" :disabled="generating || active" @click="generate">
-                {{ generating ? '提交中…' : active ? '生成中…' : '生成视频' }}
-              </button>
-            </div>
+              <div class="row3">
+                <label><span>宽度 (width)</span><input v-model.number="draft.width" type="number" :min="limits.width?.min ?? 256" :max="limits.width?.max ?? 1920" :step="limits.width?.step ?? 32" /></label>
+                <label><span>高度 (height)</span><input v-model.number="draft.height" type="number" :min="limits.height?.min ?? 256" :max="limits.height?.max ?? 1920" :step="limits.height?.step ?? 32" /></label>
+                <label><span>时长 (duration, 秒)</span><input v-model.number="draft.duration" type="number" :min="limits.duration?.min ?? 1" :max="limits.duration?.max ?? 10" :step="limits.duration?.step ?? 0.5" /></label>
+              </div>
+
+              <p v-if="selected.disabled" class="muted disabled-note">该镜头已用于合成，保留供预览，不能再次生成。</p>
+              <div class="actions">
+                <button type="button" class="ghost-btn" @click="openScriptPreview">预览剧本</button>
+                <button type="button" class="ghost-btn" :disabled="saving || selected.disabled" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
+                <button type="button" class="primary" :disabled="generating || active || selected.disabled" @click="requestGenerate">{{ generating ? '提交中…' : active ? '生成中…' : '生成视频' }}</button>
+              </div>
+            </template>
           </section>
 
           <JobStatus :job="job" @cancel="cancel" @preview="previewing = $event" />
         </template>
       </main>
     </div>
+
+    <Modal
+      v-if="scriptModalOpen"
+      :title="scriptModalMode === 'generate' ? '确认剧本内容' : '预览剧本内容'"
+      wide
+      @close="scriptModalOpen = false"
+    >
+      <div class="script-preview">
+        <p class="muted">
+          以下内容由背景、故事板和约束按顺序聚合，段落之间保留一个空行，并将作为视频生成的提示词输入。
+        </p>
+        <textarea :value="aggregatedPrompt" rows="20" class="mono" readonly placeholder="剧本内容为空" />
+        <span class="muted script-count">共 {{ aggregatedPrompt.length }} 个字符</span>
+      </div>
+      <template #footer>
+        <button type="button" class="ghost-btn" @click="scriptModalOpen = false">
+          {{ scriptModalMode === 'generate' ? '返回修改' : '关闭' }}
+        </button>
+        <button
+          v-if="scriptModalMode === 'generate'"
+          type="button"
+          class="primary"
+          :disabled="!aggregatedPrompt || generating"
+          @click="confirmGenerate"
+        >
+          确认并生成
+        </button>
+      </template>
+    </Modal>
 
     <Modal v-if="addOpen" title="添加镜头" @close="addOpen = false">
       <div class="add-form">
@@ -505,6 +704,15 @@ onUnmounted(stopPolling);
 .page-error {
   margin: 12px 22px 0;
 }
+.chapter-introduction {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
 .body {
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
@@ -544,6 +752,17 @@ onUnmounted(stopPolling);
 }
 .shots li.dragging {
   opacity: 0.45;
+}
+.shots li.disabled {
+  opacity: 0.48;
+  filter: grayscale(0.7);
+}
+.merge-check {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
 }
 .shot {
   flex: 1;
@@ -601,6 +820,10 @@ onUnmounted(stopPolling);
 }
 .rm {
   font-size: 11.5px;
+}
+.merged-label {
+  color: #a5b4fc;
+  font-weight: 500;
 }
 .progress-text,
 .shot-error {
@@ -702,6 +925,66 @@ onUnmounted(stopPolling);
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
+}
+.prompt-parts {
+  display: grid;
+  gap: 14px;
+}
+.script-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.script-preview p {
+  margin: 0;
+}
+.script-preview textarea {
+  min-height: 360px;
+  resize: vertical;
+  white-space: pre-wrap;
+}
+.script-count {
+  align-self: flex-end;
+  font-size: 12px;
+}
+.source-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.source-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  cursor: grab;
+}
+.source-item.dragging {
+  opacity: 0.45;
+}
+.source-order {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: white;
+  font-size: 11px;
+}
+.source-name {
+  flex: 1;
+}
+.disabled-note {
+  margin: 0;
 }
 .presets {
   display: flex;

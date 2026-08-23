@@ -20,13 +20,11 @@ const preview = computed(() => {
   return hit ? hit.url : `/resources/images/${encodeURIComponent(props.modelValue)}`;
 });
 
-async function onFile(event) {
-  const file = event.target.files && event.target.files[0];
+async function uploadFile(file) {
   if (!file) return;
   error.value = '';
   busy.value = true;
   try {
-    // Upload immediately so the name is stable and ComfyUI already has the file.
     const res = await api.uploadImage(file);
     emit('update:modelValue', res.name);
     emit('uploaded');
@@ -35,6 +33,32 @@ async function onFile(event) {
   } finally {
     busy.value = false;
     if (input.value) input.value.value = '';
+  }
+}
+
+function onFile(event) {
+  uploadFile(event.target.files && event.target.files[0]);
+}
+
+function onDrop(event) {
+  uploadFile(event.dataTransfer.files && event.dataTransfer.files[0]);
+}
+
+async function selectLibrary(image) {
+  if (!image.needsImport) {
+    emit('update:modelValue', image.name);
+    return;
+  }
+  error.value = '';
+  busy.value = true;
+  try {
+    const response = await fetch(image.url, { credentials: 'include' });
+    if (!response.ok) throw new Error(`素材读取失败 (${response.status})`);
+    const blob = await response.blob();
+    await uploadFile(new File([blob], image.name || 'asset.png', { type: blob.type || 'image/png' }));
+  } catch (err) {
+    error.value = err.message;
+    busy.value = false;
   }
 }
 </script>
@@ -46,25 +70,26 @@ async function onFile(event) {
       <button v-if="modelValue" type="button" class="link" @click="emit('update:modelValue', '')">清除</button>
     </div>
 
-    <div class="drop" :class="{ filled: !!preview }" @click="input.click()">
+    <div class="drop" :class="{ filled: !!preview }" @click="input.click()" @dragover.prevent @drop.prevent.stop="onDrop">
       <img v-if="preview" :src="preview" :alt="label" />
       <span v-else-if="busy" class="hint">上传中…</span>
-      <span v-else class="hint">点击上传图片<br /><small>png / jpg / webp</small></span>
+      <span v-else class="hint">点击或拖拽上传图片<br /><small>png / jpg / webp</small></span>
     </div>
     <input ref="input" type="file" accept="image/*" hidden @change="onFile" />
 
     <p v-if="error" class="error">{{ error }}</p>
     <p v-if="modelValue" class="mono muted name">{{ modelValue }}</p>
 
+    <span v-if="library.length" class="library-label">从素材库选择</span>
     <div v-if="library.length" class="library">
       <button
         v-for="img in library"
-        :key="img.name"
+        :key="img.key || img.url || img.name"
         type="button"
         class="thumb"
         :class="{ active: modelValue === img.name }"
         :title="img.name"
-        @click="emit('update:modelValue', img.name)"
+        @click="selectLibrary(img)"
       >
         <img :src="img.url" :alt="img.name" />
       </button>
@@ -120,6 +145,10 @@ async function onFile(event) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.library-label {
+  color: var(--muted);
+  font-size: 12px;
 }
 .library {
   display: flex;

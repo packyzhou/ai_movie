@@ -12,6 +12,7 @@ config/account.json
 
 # User-generated content: project/template data and per-template workflows
 resources/datas/*.json
+resources/assets/
 resources/output/
 api/*/
 !api/config/

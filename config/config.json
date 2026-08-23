@@ -4,7 +4,13 @@
   "apiConfigDir": "api/config",
   "workflowDir": "api",
   "resourcesDir": "resources/images",
+  "assetsDir": "resources/assets",
   "dataDir": "resources/datas",
+  "navigation": [
+    { "name": "projects", "label": "我的项目", "icon": "🎬" },
+    { "name": "templates", "label": "AI模板", "icon": "🧩" },
+    { "name": "assets", "label": "素材库", "icon": "📦" }
+  ],
   "outputDir": "resources/output",
   "ffmpegPath": "ffmpeg",
   "ffprobePath": "ffprobe",

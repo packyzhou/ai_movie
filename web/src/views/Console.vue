@@ -7,11 +7,7 @@ import { session, signOut } from '../session';
 const router = useRouter();
 const settingsOpen = ref(false);
 const options = ref({});
-
-const NAV = [
-  { name: 'projects', label: '我的项目', icon: '🎬' },
-  { name: 'templates', label: '模板', icon: '🧩' },
-];
+const navigation = ref([]);
 
 async function logout() {
   await signOut();
@@ -20,6 +16,7 @@ async function logout() {
 
 onMounted(async () => {
   options.value = await api.options().catch(() => ({}));
+  navigation.value = options.value.navigation || [];
 });
 </script>
 
@@ -61,7 +58,7 @@ onMounted(async () => {
     <div class="body">
       <!-- left: navigation -->
       <aside class="sidenav">
-        <router-link v-for="n in NAV" :key="n.name" :to="{ name: n.name }" class="nav-item">
+        <router-link v-for="n in navigation" :key="n.name" :to="{ name: n.name }" class="nav-item">
           <span class="icon">{{ n.icon }}</span>{{ n.label }}
         </router-link>
       </aside>

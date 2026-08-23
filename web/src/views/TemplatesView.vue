@@ -24,7 +24,8 @@ const formError = ref('');
 const editingId = ref(null);
 const check = ref(null);
 
-const form = reactive({ templateId: '', name: '', content: '', remark: '' });
+const form = reactive({ templateId: '', name: '', type: 'video', content: '', remark: '' });
+const TYPE_LABELS = { video: '视频', image: '图片', text: '文本' };
 
 const isEdit = computed(() => !!editingId.value);
 
@@ -48,6 +49,7 @@ function openCreate() {
   editingId.value = null;
   form.templateId = uuid();
   form.name = '';
+  form.type = 'video';
   form.content = '';
   form.remark = '';
   check.value = null;
@@ -63,6 +65,7 @@ async function openEdit(row) {
     editingId.value = template.templateId;
     form.templateId = template.templateId;
     form.name = template.name;
+    form.type = template.type || 'video';
     form.content = template.content;
     form.remark = template.remark || '';
     modalOpen.value = true;
@@ -76,7 +79,7 @@ async function selfCheck() {
   formError.value = '';
   check.value = null;
   try {
-    check.value = await api.validateTemplate(form.content);
+    check.value = await api.validateTemplate(form.content, form.type);
   } catch (err) {
     formError.value = err.message;
   }
@@ -95,7 +98,13 @@ async function save() {
   formError.value = '';
   saving.value = true;
   try {
-    const payload = { templateId: form.templateId, name: form.name, content: form.content, remark: form.remark };
+    const payload = {
+      templateId: form.templateId,
+      name: form.name,
+      type: form.type,
+      content: form.content,
+      remark: form.remark,
+    };
     const res = isEdit.value ? await api.updateTemplate(editingId.value, payload) : await api.createTemplate(payload);
     modalOpen.value = false;
     await load(isEdit.value ? list.page : 1);
@@ -140,6 +149,7 @@ onMounted(() => load(1));
         <thead>
           <tr>
             <th>模板名称</th>
+            <th>类型</th>
             <th>节点数</th>
             <th>参数绑定</th>
             <th>备注</th>
@@ -149,10 +159,10 @@ onMounted(() => load(1));
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="6" class="empty">载入中…</td>
+            <td colspan="7" class="empty">载入中…</td>
           </tr>
           <tr v-else-if="!list.items.length">
-            <td colspan="6" class="empty">还没有模板，点击「新建模板」粘贴 ComfyUI API 格式工作流。</td>
+            <td colspan="7" class="empty">还没有模板，点击「新建模板」粘贴 ComfyUI API 格式工作流。</td>
           </tr>
           <tr v-for="row in list.items" v-else :key="row.templateId">
             <td>
@@ -160,6 +170,7 @@ onMounted(() => load(1));
               <span v-if="row.builtin" class="badge">内置</span>
               <div class="mono muted">{{ row.templateId }}</div>
             </td>
+            <td><span class="badge">{{ TYPE_LABELS[row.type || 'video'] }}</span></td>
             <td>{{ row.nodeCount }}</td>
             <td>
               <span v-if="!row.missing || !row.missing.length" class="badge completed">全部就绪</span>
@@ -193,6 +204,15 @@ onMounted(() => load(1));
         </div>
 
         <label>
+          <span>模板类型 <em>*</em></span>
+          <select v-model="form.type">
+            <option value="video">视频</option>
+            <option value="image">图片</option>
+            <option value="text">文本</option>
+          </select>
+        </label>
+
+        <label>
           <span>
             模板内容（ComfyUI API 格式 JSON）<em>*</em>
             <small class="muted">保存前会自检</small>
@@ -214,7 +234,7 @@ onMounted(() => load(1));
             <span v-if="check.missing.length" class="badge failed">
               未绑定：{{ check.missing.map((k) => BINDING_LABELS[k] || k).join('、') }}
             </span>
-            <span v-else class="badge completed">六项参数全部绑定成功</span>
+            <span v-else class="badge completed">模板所需参数全部绑定成功</span>
           </template>
         </div>
 

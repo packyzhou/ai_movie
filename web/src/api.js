@@ -49,7 +49,27 @@ export const api = {
   createTemplate: (data) => post('/api/templates', data),
   updateTemplate: (id, data) => put(`/api/templates/${encodeURIComponent(id)}`, data),
   deleteTemplate: (id) => del(`/api/templates/${encodeURIComponent(id)}`),
-  validateTemplate: (content) => post('/api/templates/validate', { content }),
+  validateTemplate: (content, type) => post('/api/templates/validate', { content, type }),
+
+  // assets
+  assets: (params) => request(`/api/assets?${qs(params)}`),
+  asset: (id) => request(`/api/assets/${encodeURIComponent(id)}`),
+  createAsset: (data) => post('/api/assets', data),
+  updateAsset: (id, data) => put(`/api/assets/${encodeURIComponent(id)}`, data),
+  deleteAsset: (id) => del(`/api/assets/${encodeURIComponent(id)}`),
+  generateAsset: (data) => post('/api/assets/generate', data),
+  uploadAsset(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    return request('/api/assets/uploads', { method: 'POST', body: fd });
+  },
+  createTextAsset: (content) => post('/api/assets/text', { content }),
+
+  // styles
+  styles: () => request('/api/styles'),
+  createStyle: (data) => post('/api/styles', data),
+  updateStyle: (id, data) => put(`/api/styles/${encodeURIComponent(id)}`, data),
+  deleteStyle: (id) => del(`/api/styles/${encodeURIComponent(id)}`),
 
   // projects
   projects: (params) => request(`/api/projects?${qs(params)}`),
@@ -61,6 +81,8 @@ export const api = {
   // chapters & shots
   chapter: (projectId, chapterId) =>
     request(`/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}`),
+  updateChapter: (projectId, chapterId, data) =>
+    put(`/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}`, data),
   createShot: (projectId, chapterId, data) =>
     post(`/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/shots`, data),
   updateShot: (projectId, chapterId, shotId, data) =>
@@ -74,8 +96,8 @@ export const api = {
     ),
   reorderShots: (projectId, chapterId, shotIds) =>
     put(`/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/shots/reorder`, { shotIds }),
-  mergeShots: (projectId, chapterId) =>
-    post(`/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/shots/merge`),
+  mergeShots: (projectId, chapterId, data) =>
+    post(`/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/shots/merge`, data),
 
   // generation
   generate: (data) => post('/api/generate', data),

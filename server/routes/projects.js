@@ -12,6 +12,31 @@ const { asyncRoute, bad, pageQuery, requireText } = require('./helpers');
 const router = express.Router();
 
 const BACKGROUND_MAX = 500;
+const INTRODUCTION_MAX = 5000;
+const STORYBOARD_DEFAULT = '要求：\nxxx\n\n场景描述：\nxxx\n\n剧情：\nxxx\n\n镜头：\nxxx\n\n音频：\nxxx\n\n字幕：\nxxx';
+const NEGATIVE_DEFAULT = '无动画、卡通或过度CG感，保持实拍质感。无其他人、无复制人、无变形、无畸变。';
+
+function chapterBackground(project, chapter) {
+  return [String(project.background || '').trim(), String(chapter.introduction || '').trim()].filter(Boolean).join('\n-------\n');
+}
+
+function promptOf(shot) {
+  if (shot.promptBackground !== undefined || shot.promptStoryboard !== undefined || shot.promptNegative !== undefined) {
+    return [shot.promptBackground, shot.promptStoryboard, shot.promptNegative]
+      .map((part) => String(part || '').trim())
+      .filter(Boolean)
+      .join('\n\n');
+  }
+  return String(shot.prompt || '').trim();
+}
+
+function cleanStyleIds(username, value) {
+  const ids = Array.isArray(value) ? value.map(String) : [];
+  const unique = [...new Set(ids)];
+  const known = new Set(store.styles.list(username).map((style) => style.styleId));
+  if (unique.some((id) => !known.has(id))) throw bad('Unknown project style');
+  return unique;
+}
 
 function defaults() {
   const l = workflow.limits;
@@ -38,6 +63,7 @@ function normalizeChapters(input, existing = []) {
     return {
       chapterId: c.chapterId || crypto.randomUUID(),
       title: requireText(c.title, 'Chapter title', 200),
+      introduction: String(c.introduction ?? (prev && prev.introduction) ?? '').trim().slice(0, INTRODUCTION_MAX),
       // Shots are edited on the chapter page, never through the project modal.
       shots: prev ? prev.shots || [] : [],
     };
@@ -52,6 +78,7 @@ function summarize(p) {
     name: p.name,
     templateId: p.templateId,
     background: p.background,
+    styleIds: p.styleIds || [],
     chapterCount: (p.chapters || []).length,
     shotCount: (p.chapters || []).reduce((n, c) => n + (c.shots || []).length, 0),
     createdAt: p.createdAt,
@@ -85,6 +112,7 @@ router.post(
       name: requireText(body.name, 'Project name', 120),
       templateId,
       background: String(body.background || '').trim().slice(0, BACKGROUND_MAX),
+      styleIds: cleanStyleIds(req.user, body.styleIds),
       chapters: normalizeChapters(body.chapters || []),
     };
     res.json({ project: store.projects.insert(req.user, project) });
@@ -108,6 +136,7 @@ router.put(
     if (body.background !== undefined) {
       patch.background = String(body.background || '').trim().slice(0, BACKGROUND_MAX);
     }
+    if (body.styleIds !== undefined) patch.styleIds = cleanStyleIds(req.user, body.styleIds);
     if (body.chapters !== undefined) patch.chapters = normalizeChapters(body.chapters, existing.chapters || []);
 
     res.json({ project: store.projects.update(req.user, req.params.projectId, patch) });
@@ -149,8 +178,35 @@ router.get(
     if (changed) persist(req.user, project);
     res.json({
       chapter,
-      project: { projectId: project.projectId, name: project.name, templateId: project.templateId, background: project.background },
+      project: {
+        projectId: project.projectId,
+        name: project.name,
+        templateId: project.templateId,
+        background: project.background,
+        styleIds: project.styleIds || [],
+      },
     });
+  })
+);
+
+router.put(
+  '/:projectId/chapters/:chapterId',
+  asyncRoute(async (req, res) => {
+    const { project, chapter } = locate(req.user, req.params.projectId, req.params.chapterId);
+    const previousBackground = chapterBackground(project, chapter);
+    chapter.introduction = String((req.body || {}).introduction || '').trim().slice(0, INTRODUCTION_MAX);
+    const nextBackground = chapterBackground(project, chapter);
+    chapter.shots.forEach((shot) => {
+      const legacyAuto = shot.promptBackgroundAuto === undefined &&
+        (!shot.promptBackground || shot.promptBackground === previousBackground);
+      if (!shot.merged && (shot.promptBackgroundAuto === true || legacyAuto)) {
+        shot.promptBackground = nextBackground;
+        shot.promptBackgroundAuto = true;
+        shot.prompt = promptOf(shot);
+      }
+    });
+    persist(req.user, project);
+    res.json({ chapter });
   })
 );
 
@@ -166,10 +222,17 @@ router.post(
       remark: String(body.remark || '').trim().slice(0, 500),
       firstFrame: '',
       lastFrame: '',
+      promptBackground: chapterBackground(project, chapter),
+      promptBackgroundAuto: true,
+      promptStoryboard: STORYBOARD_DEFAULT,
+      promptNegative: NEGATIVE_DEFAULT,
       prompt: '',
+      disabled: false,
+      merged: false,
       ...defaults(),
       job: shotjobs.emptyJob(),
     };
+    shot.prompt = promptOf(shot);
     chapter.shots.push(shot);
     renumber(chapter.shots);
     persist(req.user, project);
@@ -180,14 +243,24 @@ router.post(
 router.post(
   '/:projectId/chapters/:chapterId/shots/merge',
   asyncRoute(async (req, res) => {
+    const body = req.body || {};
     const { project, chapter } = locate(req.user, req.params.projectId, req.params.chapterId);
-    if (chapter.shots.length < 2) throw bad('至少需要两个镜头才能合成');
-    const sources = chapter.shots.map((shot) => ({ shot, job: shotjobs.normalize(shot.job) }));
+    const shotIds = Array.isArray(body.shotIds) ? body.shotIds.map(String) : [];
+    if (shotIds.length < 2 || new Set(shotIds).size !== shotIds.length) {
+      throw bad('请选择至少两个不同的镜头进行合成');
+    }
+    const byId = new Map(chapter.shots.map((shot) => [shot.shotId, shot]));
+    const sourceShots = shotIds.map((id) => byId.get(id));
+    if (sourceShots.some((shot) => !shot)) throw bad('选择的镜头不存在');
+    if (sourceShots.some((shot) => shot.merged)) throw bad('合成镜头不能作为原镜头再次合成');
+    const sources = sourceShots.map((shot) => ({ shot, job: shotjobs.normalize(shot.job) }));
     const unavailable = sources.find(({ job }) => job.status !== shotjobs.COMPLETED || !job.file);
     if (unavailable) throw bad(`镜头「${unavailable.shot.name}」尚未生成完成，无法合成`);
 
+    const existing = body.targetShotId ? byId.get(String(body.targetShotId)) : null;
+    if (body.targetShotId && (!existing || !existing.merged)) throw bad('合成镜头不存在');
     const date = new Date();
-    const shotId = crypto.randomUUID();
+    const shotId = existing ? existing.shotId : crypto.randomUUID();
     const saved = await merger.mergeVideos(sources.map(({ job }) => job.file), {
       username: req.user,
       projectId: project.projectId,
@@ -195,17 +268,22 @@ router.post(
       shotId,
       date,
     });
-    const name = `merge_${archive.stamp(date)}`;
-    const merged = {
+    const merged = existing || {
       shotId,
-      seq: 1,
-      name,
+      name: `merge_${archive.stamp(date)}_${sources.length}`,
       remark: `由 ${sources.length} 个镜头按顺序合成`,
       firstFrame: '',
       lastFrame: '',
       prompt: '',
       width: sources[0].shot.width,
       height: sources[0].shot.height,
+      disabled: false,
+      merged: true,
+    };
+    const previousFile = existing && existing.job && existing.job.file;
+    Object.assign(merged, {
+      sourceShotIds: shotIds,
+      mergedSourceShotIds: shotIds,
       duration: sources.reduce((total, item) => total + (Number(item.shot.duration) || 0), 0),
       job: {
         ...shotjobs.emptyJob(),
@@ -217,17 +295,21 @@ router.post(
         finishedAt: new Date().toISOString(),
         ...saved,
       },
-    };
+    });
 
-    chapter.shots = [merged];
+    if (!existing) chapter.shots.push(merged);
+    sourceShots.forEach((shot) => {
+      shot.disabled = true;
+    });
+    renumber(chapter.shots);
     try {
       persist(req.user, project);
     } catch (err) {
       await archive.remove(saved.file);
       throw err;
     }
-    await Promise.all(sources.map(({ job }) => archive.remove(job.file)));
-    res.json({ shot: merged, removed: sources.length });
+    if (previousFile && previousFile !== saved.file) await archive.remove(previousFile);
+    res.json({ shot: merged, shots: chapter.shots });
   })
 );
 
@@ -248,7 +330,10 @@ router.put(
   })
 );
 
-const SHOT_FIELDS = ['name', 'remark', 'firstFrame', 'lastFrame', 'prompt', 'width', 'height', 'duration'];
+const SHOT_FIELDS = [
+  'name', 'remark', 'firstFrame', 'lastFrame', 'promptBackground', 'promptStoryboard', 'promptNegative',
+  'width', 'height', 'duration',
+];
 
 router.put(
   '/:projectId/chapters/:chapterId/shots/:shotId',
@@ -262,8 +347,18 @@ router.put(
       if (body[field] === undefined) continue;
       if (field === 'name') shot.name = requireText(body.name, 'Shot name', 120);
       else if (['width', 'height', 'duration'].includes(field)) shot[field] = Number(body[field]);
-      else shot[field] = body[field];
+      else shot[field] = String(body[field] || '');
     }
+    if (!shot.merged && body.promptBackground !== undefined) {
+      shot.promptBackgroundAuto = shot.promptBackground === chapterBackground(project, chapter);
+    }
+    if (shot.merged && body.sourceShotIds !== undefined) {
+      const sourceShotIds = Array.isArray(body.sourceShotIds) ? body.sourceShotIds.map(String) : [];
+      const valid = new Set(chapter.shots.filter((item) => !item.merged).map((item) => item.shotId));
+      if (sourceShotIds.length < 2 || sourceShotIds.some((id) => !valid.has(id))) throw bad('原镜头列表无效');
+      shot.sourceShotIds = sourceShotIds;
+    }
+    if (!shot.merged) shot.prompt = promptOf(shot);
     persist(req.user, project);
     res.json({ shot });
   })
@@ -275,7 +370,17 @@ router.delete(
     const { project, chapter } = locate(req.user, req.params.projectId, req.params.chapterId);
     const idx = chapter.shots.findIndex((s) => s.shotId === req.params.shotId);
     if (idx === -1) throw bad('Shot not found', 404);
-    const [removed] = chapter.shots.splice(idx, 1);
+    const removed = chapter.shots[idx];
+    if (!removed.merged && chapter.shots.some((item) => item.merged && (item.sourceShotIds || []).includes(removed.shotId))) {
+      throw bad('该镜头已被合成镜头引用，不能删除');
+    }
+    chapter.shots.splice(idx, 1);
+    if (removed.merged) {
+      const referenced = new Set(chapter.shots.filter((item) => item.merged).flatMap((item) => item.sourceShotIds || []));
+      chapter.shots.forEach((item) => {
+        if (!item.merged) item.disabled = referenced.has(item.shotId);
+      });
+    }
     renumber(chapter.shots);
     persist(req.user, project);
     await archive.remove(removed.job && removed.job.file);
@@ -283,4 +388,4 @@ router.delete(
   })
 );
 
-module.exports = { router, locate, persist };
+module.exports = { router, locate, persist, promptOf };

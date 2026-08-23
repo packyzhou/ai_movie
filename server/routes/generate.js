@@ -48,6 +48,7 @@ router.get('/options', (req, res) => {
     comfyUrl: comfy.baseUrl,
     clientId: jobs.CLIENT_ID,
     pollIntervalMs: jobs.pollIntervalMs,
+    navigation: config.navigation,
   });
 });
 
@@ -88,6 +89,8 @@ router.post(
     const { project, chapter } = projects.locate(req.user, projectId, chapterId);
     const shot = chapter.shots.find((s) => s.shotId === shotId);
     if (!shot) throw bad('Shot not found', 404);
+    if (shot.disabled || shot.merged) throw bad('This shot cannot be generated');
+    shot.prompt = projects.promptOf(shot);
 
     const template = store.templates.find(req.user, project.templateId);
     if (!template) throw bad(`Project template "${project.templateId}" no longer exists`);

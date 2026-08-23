@@ -9,6 +9,17 @@ const config = require('../config');
 const { asyncRoute, bad, pageQuery, requireText } = require('./helpers');
 
 const router = express.Router();
+const TEMPLATE_TYPES = new Set(['video', 'image', 'text']);
+
+function templateType(value) {
+  const type = String(value || 'video');
+  if (!TEMPLATE_TYPES.has(type)) throw bad('Template type must be video, image or text');
+  return type;
+}
+
+function missingForType(missing, type) {
+  return type === 'video' ? missing : missing.filter((key) => key === 'prompt');
+}
 
 /** The row we hand to the list view - the full graph stays out of it. */
 function summarize(row) {
@@ -33,6 +44,7 @@ function seedDefault(username) {
     templateId,
     name: 'MiniMax H3 首尾帧生视频',
     remark: '内置模板：首帧 + 尾帧 + 提示词 → 视频',
+    type: 'video',
     nodeCount: Object.keys(graph).length,
     bindings,
     seed,
@@ -71,14 +83,17 @@ router.post(
     const body = req.body || {};
     const templateId = String(body.templateId || '').trim() || crypto.randomUUID();
     const name = requireText(body.name, 'Template name', 120);
+    const type = templateType(body.type);
     const graph = tpl.parseGraph(body.content);
-    const { bindings, seed, missing } = tpl.deriveBindings(graph);
+    const { bindings, seed, missing: derivedMissing } = tpl.deriveBindings(graph);
+    const missing = missingForType(derivedMissing, type);
 
     tpl.save(templateId, graph, { templateId, name, owner: req.user, savedAt: new Date().toISOString() });
     const row = store.templates.insert(req.user, {
       templateId,
       name,
       remark: String(body.remark || '').trim(),
+      type,
       nodeCount: Object.keys(graph).length,
       bindings,
       seed,
@@ -97,6 +112,7 @@ router.put(
 
     const patch = { remark: String(body.remark ?? existing.remark ?? '').trim() };
     if (body.name !== undefined) patch.name = requireText(body.name, 'Template name', 120);
+    if (body.type !== undefined) patch.type = templateType(body.type);
 
     if (body.content !== undefined && String(body.content).trim()) {
       const graph = tpl.parseGraph(body.content);
@@ -111,8 +127,11 @@ router.put(
         nodeCount: Object.keys(graph).length,
         bindings: derived.bindings,
         seed: derived.seed,
-        missing: derived.missing,
+        missing: missingForType(derived.missing, patch.type || existing.type || 'video'),
       });
+    } else if (patch.type) {
+      const derived = tpl.deriveBindings(tpl.loadGraph(existing.templateId));
+      patch.missing = missingForType(derived.missing, patch.type);
     }
 
     const row = store.templates.update(req.user, req.params.templateId, patch);
@@ -139,8 +158,11 @@ router.delete(
 router.post(
   '/validate',
   asyncRoute(async (req, res) => {
-    const graph = tpl.parseGraph((req.body || {}).content);
+    const body = req.body || {};
+    const type = templateType(body.type);
+    const graph = tpl.parseGraph(body.content);
     const derived = tpl.deriveBindings(graph);
+    derived.missing = missingForType(derived.missing, type);
     res.json({ ok: true, nodeCount: Object.keys(graph).length, ...derived });
   })
 );
