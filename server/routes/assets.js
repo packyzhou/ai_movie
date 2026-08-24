@@ -16,6 +16,7 @@ const { asyncRoute, bad, pageQuery, requireText } = require('./helpers');
 const router = express.Router();
 const ASSET_TYPES = new Set(['image', 'video', 'text']);
 const MODES = new Set(['manual', 'ai']);
+const TASK_STATUSES = new Set(['pending', 'queued', 'running', 'completed', 'failed', 'cancelled']);
 const ALLOWED_EXT = new Set([
   '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp',
   '.mp4', '.webm', '.mov', '.avi', '.mkv', '.txt', '.md',
@@ -59,6 +60,14 @@ function cleanStyleIds(username, value) {
   return unique;
 }
 
+function cleanDimension(value, spec, label) {
+  const number = Number(value ?? spec.default);
+  if (!Number.isFinite(number) || number < spec.min || number > spec.max) {
+    throw bad(`${label} must be between ${spec.min} and ${spec.max}`);
+  }
+  return Math.round(number / (spec.step || 1)) * (spec.step || 1);
+}
+
 function cleanResources(value) {
   if (!Array.isArray(value)) return [];
   return value.map((item) => {
@@ -67,8 +76,22 @@ function cleanResources(value) {
       path: resourcePath,
       name: String((item && item.name) || path.basename(resourcePath)).slice(0, 255),
       kind: assetType(item && item.kind, 'text'),
+      status: TASK_STATUSES.has(String(item && item.status)) ? String(item.status) : 'completed',
     };
   });
+}
+
+function cleanPromptItems(value) {
+  if (!Array.isArray(value)) return [];
+  if (value.length > 100) throw bad('Prompt list must contain at most 100 items');
+  return value.map((item) => ({
+    itemId: String((item && item.itemId) || '').trim() || crypto.randomUUID(),
+    prompt: requireText(item && item.prompt, 'Prompt', 10000),
+    status: TASK_STATUSES.has(String(item && item.status)) ? String(item.status) : 'pending',
+    message: String((item && item.message) || '').slice(0, 500),
+    error: String((item && item.error) || '').slice(0, 1000),
+    resources: cleanResources(item && item.resources),
+  }));
 }
 
 function payload(body, existing = {}) {
@@ -81,15 +104,31 @@ function payload(body, existing = {}) {
     const template = store.templates.find(body.username, templateId);
     if (!template || (template.type || 'video') !== type) throw bad('AI template type does not match asset type');
   }
+  const hasSize = mode === 'ai' && (type === 'image' || type === 'video');
+  const width = hasSize
+    ? cleanDimension(body.width ?? existing.width, workflow.limits.width, 'Width')
+    : null;
+  const length = hasSize
+    ? cleanDimension(body.length ?? existing.length, workflow.limits.height, 'Length')
+    : null;
+  const promptItems = mode === 'ai' ? cleanPromptItems(body.promptItems ?? existing.promptItems) : [];
+  const resources = promptItems.length
+    ? promptItems.flatMap((item) => item.resources)
+    : cleanResources(body.resources ?? existing.resources);
   return {
     name: requireText(body.name ?? existing.name, 'Asset name', 120),
     mode,
     type,
-    prompt: String(body.prompt ?? existing.prompt ?? '').trim(),
+    prompt: promptItems.length
+      ? promptItems.map((item) => item.prompt).join('\n')
+      : String(body.prompt ?? existing.prompt ?? '').trim(),
+    promptItems,
     templateId: mode === 'ai' ? templateId : '',
+    width,
+    length,
     remark: String(body.remark ?? existing.remark ?? '').trim().slice(0, 500),
     styleIds: cleanStyleIds(body.username, body.styleIds ?? existing.styleIds),
-    resources: cleanResources(body.resources ?? existing.resources),
+    resources,
   };
 }
 
@@ -152,20 +191,26 @@ router.post(
     }
     if (!derived.bindings.prompt) throw bad('This template has no prompt binding');
     const limits = workflow.limits;
+    const width = type === 'image' || type === 'video'
+      ? cleanDimension(body.width, limits.width, 'Width')
+      : limits.width.default;
+    const length = type === 'image' || type === 'video'
+      ? cleanDimension(body.length, limits.height, 'Length')
+      : limits.height.default;
     const built = workflow.build(
       graph,
       derived.bindings,
       {
         prompt,
-        width: limits.width.default,
-        height: limits.height.default,
+        width,
+        height: length,
         duration: limits.duration.default,
       },
       { seedBinding: derived.seed }
     );
     const result = await comfy.queuePrompt(built.graph, jobs.CLIENT_ID);
     if (!result || !result.prompt_id) throw bad('ComfyUI did not return a prompt_id', 502);
-    const job = jobs.newJob(result.prompt_id, { prompt, type, templateId: template.templateId }, result.number);
+    const job = jobs.newJob(result.prompt_id, { prompt, type, templateId: template.templateId, width, length }, result.number);
     res.json({ promptId: job.promptId, job });
   })
 );

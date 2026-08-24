@@ -98,6 +98,8 @@ export const api = {
     put(`/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/shots/reorder`, { shotIds }),
   mergeShots: (projectId, chapterId, data) =>
     post(`/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/shots/merge`, data),
+  unmergeShot: (projectId, chapterId, shotId) =>
+    post(`/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/shots/${encodeURIComponent(shotId)}/unmerge`),
 
   // generation
   generate: (data) => post('/api/generate', data),

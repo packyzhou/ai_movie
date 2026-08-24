@@ -55,6 +55,14 @@ function renumber(list) {
   return list;
 }
 
+function refreshMergeLocks(shots) {
+  const referenced = new Set(shots.filter((shot) => shot.merged).flatMap((shot) => shot.sourceShotIds || []));
+  shots.forEach((shot) => {
+    shot.disabled = referenced.has(shot.shotId);
+  });
+  return shots;
+}
+
 function normalizeChapters(input, existing = []) {
   if (!Array.isArray(input)) return existing;
   const byId = new Map(existing.map((c) => [c.chapterId, c]));
@@ -250,15 +258,15 @@ router.post(
       throw bad('请选择至少两个不同的镜头进行合成');
     }
     const byId = new Map(chapter.shots.map((shot) => [shot.shotId, shot]));
+    const existing = body.targetShotId ? byId.get(String(body.targetShotId)) : null;
+    if (body.targetShotId && (!existing || !existing.merged)) throw bad('合成镜头不存在');
+    if (existing && shotIds.includes(existing.shotId)) throw bad('合成镜头不能包含自身');
     const sourceShots = shotIds.map((id) => byId.get(id));
     if (sourceShots.some((shot) => !shot)) throw bad('选择的镜头不存在');
-    if (sourceShots.some((shot) => shot.merged)) throw bad('合成镜头不能作为原镜头再次合成');
     const sources = sourceShots.map((shot) => ({ shot, job: shotjobs.normalize(shot.job) }));
     const unavailable = sources.find(({ job }) => job.status !== shotjobs.COMPLETED || !job.file);
     if (unavailable) throw bad(`镜头「${unavailable.shot.name}」尚未生成完成，无法合成`);
 
-    const existing = body.targetShotId ? byId.get(String(body.targetShotId)) : null;
-    if (body.targetShotId && (!existing || !existing.merged)) throw bad('合成镜头不存在');
     const date = new Date();
     const shotId = existing ? existing.shotId : crypto.randomUUID();
     const saved = await merger.mergeVideos(sources.map(({ job }) => job.file), {
@@ -298,9 +306,7 @@ router.post(
     });
 
     if (!existing) chapter.shots.push(merged);
-    sourceShots.forEach((shot) => {
-      shot.disabled = true;
-    });
+    refreshMergeLocks(chapter.shots);
     renumber(chapter.shots);
     try {
       persist(req.user, project);
@@ -310,6 +316,26 @@ router.post(
     }
     if (previousFile && previousFile !== saved.file) await archive.remove(previousFile);
     res.json({ shot: merged, shots: chapter.shots });
+  })
+);
+
+router.post(
+  '/:projectId/chapters/:chapterId/shots/:shotId/unmerge',
+  asyncRoute(async (req, res) => {
+    const { project, chapter } = locate(req.user, req.params.projectId, req.params.chapterId);
+    const idx = chapter.shots.findIndex((shot) => shot.shotId === req.params.shotId);
+    if (idx === -1 || !chapter.shots[idx].merged) throw bad('合成镜头不存在', 404);
+    const merged = chapter.shots[idx];
+    const parent = chapter.shots.find(
+      (shot) => shot.merged && shot.shotId !== merged.shotId && (shot.sourceShotIds || []).includes(merged.shotId)
+    );
+    if (parent) throw bad(`该合成镜头正在被「${parent.name}」使用，请先解除上层合成`);
+    chapter.shots.splice(idx, 1);
+    refreshMergeLocks(chapter.shots);
+    renumber(chapter.shots);
+    persist(req.user, project);
+    await archive.remove(merged.job && merged.job.file);
+    res.json({ ok: true, shots: chapter.shots, restoredShotIds: merged.sourceShotIds || [] });
   })
 );
 
@@ -354,8 +380,9 @@ router.put(
     }
     if (shot.merged && body.sourceShotIds !== undefined) {
       const sourceShotIds = Array.isArray(body.sourceShotIds) ? body.sourceShotIds.map(String) : [];
-      const valid = new Set(chapter.shots.filter((item) => !item.merged).map((item) => item.shotId));
-      if (sourceShotIds.length < 2 || sourceShotIds.some((id) => !valid.has(id))) throw bad('原镜头列表无效');
+      const previous = shot.sourceShotIds || [];
+      if (sourceShotIds.length !== previous.length || new Set(sourceShotIds).size !== previous.length ||
+        previous.some((id) => !sourceShotIds.includes(id))) throw bad('原镜头列表只能调整顺序');
       shot.sourceShotIds = sourceShotIds;
     }
     if (!shot.merged) shot.prompt = promptOf(shot);
@@ -371,16 +398,11 @@ router.delete(
     const idx = chapter.shots.findIndex((s) => s.shotId === req.params.shotId);
     if (idx === -1) throw bad('Shot not found', 404);
     const removed = chapter.shots[idx];
-    if (!removed.merged && chapter.shots.some((item) => item.merged && (item.sourceShotIds || []).includes(removed.shotId))) {
+    if (chapter.shots.some((item) => item.merged && (item.sourceShotIds || []).includes(removed.shotId))) {
       throw bad('该镜头已被合成镜头引用，不能删除');
     }
     chapter.shots.splice(idx, 1);
-    if (removed.merged) {
-      const referenced = new Set(chapter.shots.filter((item) => item.merged).flatMap((item) => item.sourceShotIds || []));
-      chapter.shots.forEach((item) => {
-        if (!item.merged) item.disabled = referenced.has(item.shotId);
-      });
-    }
+    refreshMergeLocks(chapter.shots);
     renumber(chapter.shots);
     persist(req.user, project);
     await archive.remove(removed.job && removed.job.file);
@@ -388,4 +410,4 @@ router.delete(
   })
 );
 
-module.exports = { router, locate, persist, promptOf };
+module.exports = { router, locate, persist, promptOf, refreshMergeLocks };

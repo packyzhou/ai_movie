@@ -34,7 +34,6 @@ const config = {
   outputDir: path.join(ROOT, app.outputDir || 'resources/output'),
   // Bare command names resolve through PATH; absolute paths are used as-is.
   ffmpegPath: process.env.FFMPEG_PATH || app.ffmpegPath || 'ffmpeg',
-  ffprobePath: process.env.FFPROBE_PATH || app.ffprobePath || 'ffprobe',
 };
 
 config.comfy = readJson(path.join(config.apiConfigDir, 'comfy.json'), {});

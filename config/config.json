@@ -13,6 +13,5 @@
   ],
   "outputDir": "resources/output",
   "ffmpegPath": "ffmpeg",
-  "ffprobePath": "ffprobe",
   "sessionTtlMs": 43200000
 }

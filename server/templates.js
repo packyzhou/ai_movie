@@ -114,12 +114,18 @@ function deriveBindings(graph) {
         ? 'text'
         : 'first_frame';
     bindings.prompt = { path: `${id}.inputs.${promptField}`, type: 'string' };
-    if ('width' in node.inputs) bindings.width = { path: `${id}.inputs.width`, type: 'int' };
-    if ('height' in node.inputs) bindings.height = { path: `${id}.inputs.height`, type: 'int' };
     if (!bindings.lastFrame && 'last_frame' in node.inputs) {
       bindings.lastFrame = { path: `${id}.inputs.last_frame`, type: 'image' };
     }
   }
+
+  const dimensionNode =
+    (videoNode && 'width' in videoNode[1].inputs && 'height' in videoNode[1].inputs ? videoNode : null) ||
+    entries.find(([, node]) => 'width' in node.inputs && 'height' in node.inputs);
+  const widthNode = dimensionNode || entries.find(([, node]) => 'width' in node.inputs);
+  const heightNode = dimensionNode || entries.find(([, node]) => 'height' in node.inputs);
+  if (widthNode) bindings.width = { path: `${widthNode[0]}.inputs.width`, type: 'int' };
+  if (heightNode) bindings.height = { path: `${heightNode[0]}.inputs.height`, type: 'int' };
 
   const durationNode =
     entries.find(([, n]) => /duration|时长/.test(title(n)) && 'value' in n.inputs) ||

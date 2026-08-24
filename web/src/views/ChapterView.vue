@@ -95,9 +95,9 @@ function previewOf(shot) {
   return { url: shot.job.videoUrl, filename: (shot.job.file || shot.name).split('/').pop() };
 }
 
-const STORYBOARD_PLACEHOLDER = '要求：\n人物造型必须全程保持一致：所有画面中的人物必须严格锁定为图1（背面）与图2（正面）中的同一人。完全光头，无头发，胡须形状、密度、颜色完全一致；肤色、眼睛颜色、眉毛、面部轮廓完全一致；服装款式、颜色、褶皱完全一致。从背面、侧面、四分之三侧脸到正面，任何转身中间角度都不得出现五官变形、身份漂移或造型差异。\n\n场景描述：\n在广州塔下\n\n剧情：\n[0-2秒] 镜头一：图1局长面向镜头，说了一句“i will kill you”，然后从后面拿出一把枪对准镜头\n[2-3秒] 镜头二：开出一枪，子弹慢动作射向外星人，外星人在镜头后面，此时镜头需要转向\n[3-5秒]镜头三：子弹命中外星人额头，外星人倒地\n\n镜头：\n镜头聚焦图1人物，然后拉近枪口，人物高度过渡平滑。变形宽银幕镜头，浅景深，焦点始终保持在人物身上；镜头二慢动作，镜头顺着子弹方向移动；镜头三速度恢复正常\n\n音频：\n对白：“i will kill you“英语语速正常，背景音乐带压抑恐怖气氛\n\n字幕：\n字幕仅在人物说话时出现，约从0.5-2秒，中英双语字幕：中文在上，英文在下，居中位于画面下方三分之一处。中文：“我会杀了你”，英文：““i will kill you”，净电影级无衬线字体，无背景框，细描边保证可读性。除指定字幕外，画面无其他文字、标志或水印。
+const STORYBOARD_PLACEHOLDER = `要求：\n人物造型必须全程保持一致：所有画面中的人物必须严格锁定为图1（背面）与图2（正面）中的同一人。完全光头，无头发，胡须形状、密度、颜色完全一致；肤色、眼睛颜色、眉毛、面部轮廓完全一致；服装款式、颜色、褶皱完全一致。从背面、侧面、四分之三侧脸到正面，任何转身中间角度都不得出现五官变形、身份漂移或造型差异。\n\n场景描述：\n在广州塔下\n\n剧情：\n[0-2秒] 镜头一：图1局长面向镜头，说了一句“i will kill you”，然后从后面拿出一把枪对准镜头\n[2-3秒] 镜头二：开出一枪，子弹慢动作射向外星人，外星人在镜头后面，此时镜头需要转向\n[3-5秒]镜头三：子弹命中外星人额头，外星人倒地\n\n镜头：\n镜头聚焦图1人物，然后拉近枪口，人物高度过渡平滑。变形宽银幕镜头，浅景深，焦点始终保持在人物身上；镜头二慢动作，镜头顺着子弹方向移动；镜头三速度恢复正常\n\n音频：\n对白：“i will kill you“英语语速正常，背景音乐带压抑恐怖气氛\n\n字幕：\n字幕仅在人物说话时出现，约从0.5-2秒，中英双语字幕：中文在上，英文在下，居中位于画面下方三分之一处。中文：“我会杀了你”，英文：““i will kill you”，净电影级无衬线字体，无背景框，细描边保证可读性。除指定字幕外，画面无其他文字、标志或水印。
 
-';
+`;
 const NEGATIVE_PLACEHOLDER = '否定约束：\n无动画、卡通或过度CG感，保持实拍质感。无其他人、无复制人、无变形、无畸变。';
 
 const PRESETS = [
@@ -134,7 +134,12 @@ function select(shot) {
 }
 
 async function refreshLibrary() {
-  const assets = await api.assets({ page: 1, pageSize: 100 });
+  const assets = await api.assets({
+    page: 1,
+    pageSize: 100,
+    type: 'image',
+    styles: (project.value?.styleIds || []).join(','),
+  });
   library.value = assets.items.flatMap((asset) =>
     (asset.resources || [])
       .filter((resource) => resource.kind === 'image')
@@ -386,6 +391,23 @@ async function mergeShots(targetShot = null) {
   }
 }
 
+async function unmergeShot(shot) {
+  if (!confirm(`解除合成镜头「${shot.name}」？本次合成视频将被删除，直接原镜头会恢复。`)) return;
+  error.value = '';
+  try {
+    const sourceShotIds = [...(shot.sourceShotIds || [])];
+    const { shots: updated } = await api.unmergeShot(props.projectId, props.chapterId, shot.shotId);
+    chapter.value.shots = updated;
+    selectedId.value = '';
+    job.value = null;
+    const restored = updated.find((item) => sourceShotIds.includes(item.shotId) && !item.disabled);
+    if (restored) select(restored);
+    else if (updated.length) select(updated[0]);
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
 function toggleMergeSelection(shotId) {
   mergeSelection.value = mergeSelection.value.includes(shotId)
     ? mergeSelection.value.filter((id) => id !== shotId)
@@ -474,7 +496,6 @@ onUnmounted(stopPolling);
             @drop.prevent="dropOn(s)"
           >
             <input
-              v-if="!s.merged"
               type="checkbox"
               class="merge-check"
               :checked="mergeSelection.includes(s.shotId)"
@@ -555,6 +576,7 @@ onUnmounted(stopPolling);
                 </div>
               </div>
               <div class="actions">
+                <button type="button" class="ghost-btn danger-btn" :disabled="selected.disabled" :title="selected.disabled ? '请先解除引用它的上层合成' : ''" @click="unmergeShot(selected)">解除合成</button>
                 <button type="button" class="ghost-btn" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
                 <button type="button" class="primary" :disabled="merging || !mergeOrderChanged" @click="mergeShots(selected)">
                   {{ merging ? '重新合成中…' : '重新合成' }}
@@ -985,6 +1007,9 @@ onUnmounted(stopPolling);
 }
 .disabled-note {
   margin: 0;
+}
+.danger-btn {
+  color: var(--danger);
 }
 .presets {
   display: flex;

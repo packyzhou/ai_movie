@@ -204,10 +204,10 @@ onMounted(async () => {
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="6" class="empty">载入中…</td>
+            <td colspan="7" class="empty">载入中…</td>
           </tr>
           <tr v-else-if="!list.items.length">
-            <td colspan="6" class="empty">还没有项目，点击右上角「新建项目」开始创作。</td>
+            <td colspan="7" class="empty">还没有项目，点击右上角「新建项目」开始创作。</td>
           </tr>
           <tr v-for="row in list.items" v-else :key="row.projectId">
             <td>
@@ -215,6 +215,7 @@ onMounted(async () => {
               <div class="mono muted">{{ row.projectId }}</div>
             </td>
             <td>{{ templateName(row.templateId) }}</td>
+            <td><span v-for="name in styleNames(row.styleIds)" :key="name" class="badge style-badge">{{ name }}</span><span v-if="!styleNames(row.styleIds).length" class="muted">—</span></td>
             <td>{{ row.chapterCount }}</td>
             <td>{{ row.shotCount }}</td>
             <td class="muted">{{ new Date(row.updatedAt).toLocaleString() }}</td>
@@ -247,6 +248,17 @@ onMounted(async () => {
           <span>项目名称 <em>*</em></span>
           <input v-model="form.name" maxlength="120" required placeholder="例如：无名之辈 · 第一季" />
         </label>
+
+        <div class="field">
+          <span>项目风格（可多选）</span>
+          <div v-if="styles.length" class="style-options">
+            <label v-for="style in styles" :key="style.styleId" class="style-option">
+              <input v-model="form.styleIds" type="checkbox" :value="style.styleId" />
+              <span>{{ style.name }}</span>
+            </label>
+          </div>
+          <span v-else class="muted small">暂无风格，请先到素材库的“风格管理”中新增。</span>
+        </div>
 
         <label>
           <span>
@@ -454,4 +466,5 @@ em {
 .small {
   font-size: 12px;
 }
+.style-options{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.style-option{display:inline-flex;flex-direction:row;align-items:center;gap:5px;padding:4px 9px;border:1px solid var(--border);border-radius:999px;background:var(--surface-2);cursor:pointer}.style-option input{width:auto;margin:0;accent-color:var(--accent)}.style-option span{color:var(--text);font-size:12px}.style-badge{display:inline-block;margin:0 4px 4px 0}
 </style>

@@ -23,7 +23,7 @@ function runFfmpeg(args) {
     child.on('error', (err) => reject(new Error(`无法启动 ffmpeg：${err.message}`)));
     child.on('close', (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`ffmpeg 合成失败（退出码 ${code}）：${stderr.trim() || '未知错误'}`));
+      else reject(new Error(`ffmpeg 处理失败（退出码 ${code}）：${stderr.trim() || '未知错误'}`));
     });
   });
 }
