@@ -3,6 +3,7 @@ import { computed } from 'vue';
 
 const props = defineProps({
   job: { type: Object, default: null },
+  cancelling: { type: Boolean, default: false },
 });
 defineEmits(['cancel', 'preview']);
 
@@ -38,7 +39,7 @@ const elapsed = computed(() => {
         <span class="badge" :class="job.status">{{ STATUS_TEXT[job.status] || job.status }}</span>
         <span class="muted mono">{{ job.promptId }}</span>
       </div>
-      <button v-if="active" type="button" class="link danger" @click="$emit('cancel', job.promptId)">中断</button>
+      <button v-if="active" type="button" class="link danger" :disabled="cancelling" @click="$emit('cancel', job.promptId)">{{ cancelling ? '中断中…' : '中断' }}</button>
     </header>
 
     <div class="bar" :class="job.status">

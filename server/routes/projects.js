@@ -113,7 +113,9 @@ router.post(
   asyncRoute(async (req, res) => {
     const body = req.body || {};
     const templateId = requireText(body.templateId, 'Template', 64);
-    if (!store.templates.find(req.user, templateId)) throw bad(`Unknown template "${templateId}"`);
+    const template = store.templates.find(req.user, templateId);
+    if (!template) throw bad(`Unknown template "${templateId}"`);
+    if ((template.type || 'video') !== 'video') throw bad('Projects can only use video templates');
 
     const project = {
       projectId: String(body.projectId || '').trim() || crypto.randomUUID(),
@@ -138,7 +140,9 @@ router.put(
     if (body.name !== undefined) patch.name = requireText(body.name, 'Project name', 120);
     if (body.templateId !== undefined) {
       const templateId = requireText(body.templateId, 'Template', 64);
-      if (!store.templates.find(req.user, templateId)) throw bad(`Unknown template "${templateId}"`);
+      const template = store.templates.find(req.user, templateId);
+      if (!template) throw bad(`Unknown template "${templateId}"`);
+      if ((template.type || 'video') !== 'video') throw bad('Projects can only use video templates');
       patch.templateId = templateId;
     }
     if (body.background !== undefined) {

@@ -24,7 +24,7 @@ const editingId = ref('');
 const templates = ref([]);
 const options = ref({ limits: {} });
 const generating = ref(false);
-const generation = reactive({ status: '', message: '', promptId: '' });
+const generation = reactive({ status: '', message: '', promptId: '', cancelRequested: false, cancelling: false, item: null });
 const assetPreviewing = ref(null);
 let generationRun = 0;
 
@@ -93,13 +93,13 @@ function styleNames(styleIds) {
 }
 
 function newPromptItem(prompt = '') {
-  return { itemId: uuid(), prompt, status: 'pending', message: '', error: '', resources: [] };
+  return { itemId: uuid(), prompt, status: 'pending', progress: 0, message: '', error: '', resources: [] };
 }
 
 function resetGeneration() {
   generationRun += 1;
   generating.value = false;
-  Object.assign(generation, { status: '', message: '', promptId: '' });
+  Object.assign(generation, { status: '', message: '', promptId: '', cancelRequested: false, cancelling: false, item: null });
 }
 
 function assignForm(asset) {
@@ -115,6 +115,7 @@ function assignForm(asset) {
   form.promptItems = promptItems.map((item) => ({
     ...newPromptItem(item.prompt || ''),
     ...item,
+    progress: Number.isFinite(item.progress) ? item.progress : (item.status === 'completed' ? 1 : 0),
     resources: (item.resources || []).map((resource) => ({ ...resource, status: resource.status || 'completed' })),
   }));
   form.templateId = asset.templateId || '';
@@ -207,9 +208,10 @@ async function generatedResources(outputs) {
 }
 
 async function waitForJob(promptId, item, runId) {
-  while (runId === generationRun) {
+  while (runId === generationRun && !generation.cancelRequested) {
     const { job } = await api.job(promptId);
     item.status = job.status;
+    item.progress = Math.max(0, Math.min(1, Number(job.progress) || 0));
     item.message = job.message || '';
     generation.status = job.status;
     generation.message = `提示词 ${form.promptItems.indexOf(item) + 1}：${item.message}`;
@@ -229,42 +231,100 @@ async function waitForJob(promptId, item, runId) {
   }
 }
 
+async function runItem(item, index, total, runId) {
+  generation.item = item;
+  item.status = 'queued';
+  item.progress = 0;
+  item.message = '正在提交';
+  item.error = '';
+  generation.message = `正在生成第 ${index + 1}/${total} 项`;
+  try {
+    const { promptId, job } = await api.generateAsset({
+      prompt: item.prompt,
+      type: form.type,
+      templateId: form.templateId,
+      width: form.width,
+      length: form.length,
+    });
+    Object.assign(generation, { status: job.status, message: `正在生成第 ${index + 1}/${total} 项`, promptId });
+    await waitForJob(promptId, item, runId);
+  } catch (err) {
+    item.status = 'failed';
+    item.progress = 0;
+    item.error = err.message;
+  }
+  form.resources = form.promptItems.flatMap((task) => task.resources || []);
+}
+
 async function generate() {
   formError.value = '';
-  const tasks = form.promptItems.filter((item) => item.prompt.trim());
-  if (!tasks.length || tasks.length !== form.promptItems.length) {
-    formError.value = '请填写提示词列表中的所有提示词';
+  const tasks = form.promptItems.filter((item) => item.status === 'pending');
+  if (!tasks.length) {
+    formError.value = '没有待生成的素材item';
+    return;
+  }
+  if (tasks.some((item) => !item.prompt.trim())) {
+    formError.value = '请填写待生成素材item中的所有提示词';
     return;
   }
   generating.value = true;
+  generation.cancelRequested = false;
+  generation.cancelling = false;
   const runId = ++generationRun;
-  form.resources = [];
-  form.promptItems.forEach((item) => Object.assign(item, { status: 'pending', message: '', error: '', resources: [] }));
-  for (const [index, item] of form.promptItems.entries()) {
-    if (runId !== generationRun) break;
-    item.status = 'queued';
-    item.message = '正在提交';
-    generation.message = `正在生成第 ${index + 1}/${form.promptItems.length} 项`;
-    try {
-      const { promptId, job } = await api.generateAsset({
-        prompt: item.prompt,
-        type: form.type,
-        templateId: form.templateId,
-        width: form.width,
-        length: form.length,
-      });
-      Object.assign(generation, { status: job.status, message: `正在生成第 ${index + 1}/${form.promptItems.length} 项`, promptId });
-      await waitForJob(promptId, item, runId);
-    } catch (err) {
-      item.status = 'failed';
-      item.error = err.message;
-    }
-    form.resources = form.promptItems.flatMap((task) => task.resources || []);
+  for (const item of tasks) {
+    if (runId !== generationRun || generation.cancelRequested) break;
+    await runItem(item, form.promptItems.indexOf(item), form.promptItems.length, runId);
   }
   if (runId === generationRun) {
     generating.value = false;
-    generation.status = form.promptItems.every((item) => item.status === 'completed') ? 'completed' : 'failed';
-    generation.message = `批量生成完成：${form.promptItems.filter((item) => item.status === 'completed').length}/${form.promptItems.length}`;
+    generation.status = generation.cancelRequested
+      ? 'cancelled'
+      : (tasks.every((item) => item.status === 'completed') ? 'completed' : 'failed');
+    generation.message = generation.cancelRequested
+      ? '生成已中断'
+      : `批量生成完成：${tasks.filter((item) => item.status === 'completed').length}/${tasks.length}`;
+  }
+}
+
+async function cancelGeneration() {
+  if (!generating.value || generation.cancelling) return;
+  generation.cancelling = true;
+  generation.cancelRequested = true;
+  const item = generation.item;
+  if (item) {
+    item.status = 'cancelled';
+    item.message = '正在中止生成';
+  }
+  try {
+    await api.cancel(generation.promptId || 'active');
+  } catch (err) {
+    if (item) {
+      item.status = 'failed';
+      item.error = err.message;
+    }
+    formError.value = err.message;
+  } finally {
+    generation.cancelling = false;
+  }
+}
+
+async function regenerate(item) {
+  if (generating.value || item.status !== 'completed') return;
+  formError.value = '';
+  if (!item.prompt.trim()) {
+    formError.value = '请先填写提示词';
+    return;
+  }
+  generating.value = true;
+  generation.cancelRequested = false;
+  generation.cancelling = false;
+  const runId = ++generationRun;
+  Object.assign(item, { status: 'pending', progress: 0, message: '', error: '', resources: [] });
+  await runItem(item, form.promptItems.indexOf(item), form.promptItems.length, runId);
+  if (runId === generationRun) {
+    generating.value = false;
+    generation.status = item.status;
+    generation.message = item.status === 'completed' ? '素材item重新生成完成' : '素材item重新生成失败';
   }
 }
 
@@ -281,6 +341,7 @@ async function save() {
         itemId: item.itemId,
         prompt: item.prompt,
         status: item.status,
+        progress: item.progress,
         message: item.message,
         error: item.error,
         resources: (item.resources || []).map(({ path, name, kind, status }) => ({ path, name, kind, status })),
@@ -472,7 +533,15 @@ onUnmounted(resetGeneration);
               <textarea v-model="item.prompt" rows="4" :disabled="generating" placeholder="请输入生成提示词" />
               <p v-if="item.message" class="muted task-message">{{ item.message }}</p>
               <p v-if="item.error" class="error">{{ item.error }}</p>
-              <div class="resource-status"><span class="muted">素材item状态</span><span class="badge" :class="item.status">{{ TASK_LABELS[item.status] || item.status }}</span></div>
+              <div v-if="item.status === 'queued' || item.status === 'running'" class="item-progress">
+                <div class="progress-track"><span :style="{ width: `${Math.round((item.progress || 0) * 100)}%` }" /></div>
+                <span class="progress-value">{{ Math.round((item.progress || 0) * 100) }}%</span>
+              </div>
+              <div class="resource-status">
+                <span class="muted">素材item状态</span>
+                <span class="badge" :class="item.status">{{ TASK_LABELS[item.status] || item.status }}</span>
+                <button v-if="item.status === 'completed'" type="button" class="link" :disabled="generating" @click="regenerate(item)">重新生成</button>
+              </div>
               <div v-if="item.resources?.length" class="task-resources">
                 <button v-for="resource in item.resources" :key="resource.path" type="button" class="generated-thumb" @click="assetPreviewing = resource">
                   <img v-if="resource.kind === 'image'" :src="resource.path" :alt="resource.name" />
@@ -486,6 +555,7 @@ onUnmounted(resetGeneration);
           <div class="generation-row">
             <button type="button" class="primary" :disabled="generating || !form.templateId || !form.promptItems.length" @click="generate">{{ generating ? '批量生成中…' : '按顺序批量生成' }}</button>
             <span v-if="generation.message" class="muted">{{ generation.message }}</span>
+            <button v-if="generating || generation.cancelling" type="button" class="ghost-btn danger" :disabled="generation.cancelling" @click="cancelGeneration">{{ generation.cancelling ? '中断中…' : '中断' }}</button>
           </div>
         </template>
 
@@ -509,5 +579,5 @@ onUnmounted(resetGeneration);
 <style scoped>
 .head,.tools,.resource-head,.generation-row{display:flex;align-items:center}.head{justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap}.head h1{margin:0;font-size:20px}.tools{gap:8px}.tools input{width:220px}.table-card{padding:6px 18px 16px}table{width:100%;border-collapse:collapse;font-size:13.5px}th,td{text-align:left;padding:11px 10px;border-bottom:1px solid var(--border);vertical-align:top}th{color:var(--muted);font-weight:500;font-size:12.5px}.right{text-align:right}.nowrap{white-space:nowrap}.nowrap .link+.link{margin-left:12px}.clip{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.empty{text-align:center;color:var(--muted);padding:34px}.name{background:none;border:0;padding:0;color:var(--text);font:inherit;font-weight:600;cursor:pointer}.form{display:flex;flex-direction:column;gap:15px}.row2{display:grid;grid-template-columns:1fr 1fr;gap:14px}.tabs,.resource-tabs{display:flex;border-bottom:1px solid var(--border)}.tabs button,.resource-tabs button:not(.remove){padding:9px 16px;border:0;background:none;color:var(--muted);cursor:pointer}.tabs button.active,.resource-tabs button.active{color:var(--text);border-bottom:2px solid var(--accent)}.resource-head{justify-content:space-between}.resource-card,.empty-box{padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2)}.empty-box{text-align:center;color:var(--muted)}.resource-tabs .remove{margin-left:auto}.drop{min-height:100px;margin-top:12px;border:1px dashed var(--border);border-radius:8px;display:grid;place-items:center;text-align:center;cursor:pointer}.drop:hover{border-color:var(--accent)}.text-entry{display:flex;flex-direction:column;align-items:flex-end;gap:8px;margin-top:12px}.preview{display:flex;flex-direction:column;gap:7px;margin-top:12px;min-width:0}.preview img,.preview video,.preview iframe{width:100%;max-height:280px;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:#090b11}.preview iframe{height:180px}.preview a{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.generation-row{gap:12px}.generated-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}@media(max-width:700px){.row2{grid-template-columns:1fr}.tools{flex-wrap:wrap}.tools input{width:100%}}
 .style-filter,.style-options{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.style-filter{margin-bottom:14px;padding:10px 14px}.style-option{display:inline-flex;flex-direction:row;align-items:center;gap:5px;padding:4px 9px;border:1px solid var(--border);border-radius:999px;background:var(--surface-2);cursor:pointer}.style-option input{width:auto;margin:0;accent-color:var(--accent)}.style-option span{color:var(--text);font-size:12px}.style-badge{display:inline-block;margin:0 4px 4px 0}.style-manager{display:flex;flex-direction:column;gap:14px}.style-create{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}.style-list{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:9px;overflow:hidden}.style-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--border)}.style-row:last-child{border-bottom:0}
-.common-params{display:flex;flex-direction:column;gap:12px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2)}.prompt-head,.prompt-item-head{display:flex;align-items:center;gap:10px}.prompt-head{justify-content:space-between}.prompt-list{display:flex;flex-direction:column;gap:12px}.prompt-item{display:flex;flex-direction:column;gap:9px;padding:13px;border:1px solid var(--border);border-radius:10px}.prompt-item-head .link{margin-left:auto}.task-message{margin:0;font-size:12px}.resource-status{display:flex;align-items:center;gap:8px;font-size:12px}.task-resources{display:flex;gap:8px;flex-wrap:wrap}.generated-thumb{position:relative;width:112px;height:78px;padding:0;overflow:hidden;border:1px solid var(--border);border-radius:8px;background:#090b11;cursor:pointer}.generated-thumb img,.generated-thumb video{width:100%;height:100%;object-fit:cover}.generated-thumb .badge{position:absolute;right:4px;bottom:4px;background:rgba(9,11,17,.86)}.text-thumb{display:grid;place-items:center;width:100%;height:100%;color:var(--muted)}.large-preview img,.large-preview video,.large-preview iframe{display:block;width:100%;max-height:70vh;object-fit:contain;border:1px solid var(--border);border-radius:9px;background:#090b11}.large-preview iframe{height:65vh}
+.common-params{display:flex;flex-direction:column;gap:12px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2)}.prompt-head,.prompt-item-head{display:flex;align-items:center;gap:10px}.prompt-head{justify-content:space-between}.prompt-list{display:flex;flex-direction:column;gap:12px}.prompt-item{display:flex;flex-direction:column;gap:9px;padding:13px;border:1px solid var(--border);border-radius:10px}.prompt-item-head .link{margin-left:auto}.task-message{margin:0;font-size:12px}.resource-status{display:flex;align-items:center;gap:8px;font-size:12px}.resource-status .link{margin-left:auto}.item-progress{display:flex;align-items:center;gap:8px}.progress-track{height:7px;flex:1;overflow:hidden;border-radius:999px;background:var(--surface-2);border:1px solid var(--border)}.progress-track span{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width .3s ease}.progress-value{min-width:34px;text-align:right;color:var(--muted);font-size:12px}.task-resources{display:flex;gap:8px;flex-wrap:wrap}.generated-thumb{position:relative;width:112px;height:78px;padding:0;overflow:hidden;border:1px solid var(--border);border-radius:8px;background:#090b11;cursor:pointer}.generated-thumb img,.generated-thumb video{width:100%;height:100%;object-fit:cover}.generated-thumb .badge{position:absolute;right:4px;bottom:4px;background:rgba(9,11,17,.86)}.text-thumb{display:grid;place-items:center;width:100%;height:100%;color:var(--muted)}.large-preview img,.large-preview video,.large-preview iframe{display:block;width:100%;max-height:70vh;object-fit:contain;border:1px solid var(--border);border-radius:9px;background:#090b11}.large-preview iframe{height:65vh}
 </style>

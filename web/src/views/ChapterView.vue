@@ -47,6 +47,7 @@ const lastSavedIntroduction = ref('');
 const savingChapter = ref(false);
 
 const job = ref(null);
+const cancellingPromptId = ref('');
 const previewing = ref(null);
 const scriptModalOpen = ref(false);
 const scriptModalMode = ref('preview');
@@ -434,7 +435,15 @@ function dropSource(targetId) {
 }
 
 async function cancel(promptId) {
-  await api.cancel(promptId).catch((err) => (error.value = err.message));
+  if (!promptId || cancellingPromptId.value === promptId) return;
+  cancellingPromptId.value = promptId;
+  error.value = '';
+  try {
+    await api.cancel(promptId);
+  } catch (err) {
+    cancellingPromptId.value = '';
+    error.value = err.message;
+  }
 }
 
 watch(() => [props.projectId, props.chapterId], load);
@@ -632,7 +641,7 @@ onUnmounted(stopPolling);
             </template>
           </section>
 
-          <JobStatus :job="job" @cancel="cancel" @preview="previewing = $event" />
+          <JobStatus :job="job" :cancelling="cancellingPromptId === job?.promptId" @cancel="cancel" @preview="previewing = $event" />
         </template>
       </main>
     </div>

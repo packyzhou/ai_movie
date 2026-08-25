@@ -88,6 +88,7 @@ function cleanPromptItems(value) {
     itemId: String((item && item.itemId) || '').trim() || crypto.randomUUID(),
     prompt: requireText(item && item.prompt, 'Prompt', 10000),
     status: TASK_STATUSES.has(String(item && item.status)) ? String(item.status) : 'pending',
+    progress: Math.max(0, Math.min(1, Number(item && item.progress) || 0)),
     message: String((item && item.message) || '').slice(0, 500),
     error: String((item && item.error) || '').slice(0, 1000),
     resources: cleanResources(item && item.resources),

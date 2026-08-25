@@ -28,6 +28,7 @@ const form = reactive({
 });
 
 const isEdit = computed(() => !!editingId.value);
+const videoTemplates = computed(() => templates.value.filter((template) => (template.type || 'video') === 'video'));
 const backgroundLeft = computed(() => BACKGROUND_MAX - form.background.length);
 
 function uuid() {
@@ -59,7 +60,7 @@ async function loadReferences() {
 function resetForm() {
   form.projectId = uuid();
   form.name = '';
-  form.templateId = templates.value.length ? templates.value[0].templateId : '';
+  form.templateId = videoTemplates.value.length ? videoTemplates.value[0].templateId : '';
   form.background = '';
   form.styleIds = [];
   form.chapters = [{ key: uuid(), chapterId: '', title: '' }];
@@ -235,7 +236,8 @@ onMounted(async () => {
           <label>
             <span>模板 <em>*</em></span>
             <select v-model="form.templateId" required>
-              <option v-for="t in templates" :key="t.templateId" :value="t.templateId">{{ t.name }}</option>
+              <option v-if="!videoTemplates.length" value="">暂无视频类型模板</option>
+              <option v-for="t in videoTemplates" :key="t.templateId" :value="t.templateId">{{ t.name }}</option>
             </select>
           </label>
           <label>

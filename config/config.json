@@ -8,8 +8,8 @@
   "dataDir": "resources/datas",
   "navigation": [
     { "name": "projects", "label": "我的项目", "icon": "🎬" },
-    { "name": "templates", "label": "AI模板", "icon": "🧩" },
-    { "name": "assets", "label": "素材库", "icon": "📦" }
+    { "name": "assets", "label": "素材库", "icon": "📦" },
+    { "name": "templates", "label": "AIGC模板", "icon": "🧩" }
   ],
   "outputDir": "resources/output",
   "ffmpegPath": "ffmpeg",
