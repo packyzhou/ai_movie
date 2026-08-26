@@ -51,6 +51,9 @@ export const api = {
   deleteTemplate: (id) => del(`/api/templates/${encodeURIComponent(id)}`),
   validateTemplate: (content, type) => post('/api/templates/validate', { content, type }),
 
+  // AI
+  optimizePrompt: (prompt) => post('/api/ai/optimize-prompt', { prompt }),
+
   // assets
   assets: (params) => request(`/api/assets?${qs(params)}`),
   asset: (id) => request(`/api/assets/${encodeURIComponent(id)}`),

@@ -8,6 +8,7 @@ const projects = require('./projects');
 const generate = require('./generate');
 const assets = require('./assets');
 const styles = require('./styles');
+const ai = require('./ai');
 
 const router = express.Router();
 
@@ -48,6 +49,7 @@ router.use('/templates', templates.router);
 router.use('/projects', projects.router);
 router.use('/assets', assets);
 router.use('/styles', styles);
+router.use('/ai', ai);
 router.use('/', generate);
 
 module.exports = router;

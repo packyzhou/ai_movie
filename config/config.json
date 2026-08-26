@@ -13,5 +13,11 @@
   ],
   "outputDir": "resources/output",
   "ffmpegPath": "ffmpeg",
-  "sessionTtlMs": 43200000
+  "sessionTtlMs": 43200000,
+  "ai": {
+    "apiKey": "sk-f26ba7c83a66407dae3579710dd6e529",
+    "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen-plus",
+    "timeoutMs": 120000
+  }
 }

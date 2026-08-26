@@ -34,6 +34,12 @@ const config = {
   outputDir: path.join(ROOT, app.outputDir || 'resources/output'),
   // Bare command names resolve through PATH; absolute paths are used as-is.
   ffmpegPath: process.env.FFMPEG_PATH || app.ffmpegPath || 'ffmpeg',
+  ai: {
+    apiKey: process.env.AI_API_KEY || app.ai?.apiKey || '',
+    url: process.env.AI_API_URL || app.ai?.url || 'https://api.openai.com/v1/chat/completions',
+    model: process.env.AI_MODEL || app.ai?.model || 'gpt-4o-mini',
+    timeoutMs: Number(process.env.AI_TIMEOUT_MS || app.ai?.timeoutMs) || 120000,
+  },
 };
 
 config.comfy = readJson(path.join(config.apiConfigDir, 'comfy.json'), {});

@@ -26,6 +26,7 @@ const draft = reactive({
   promptBackground: '',
   promptStoryboard: '',
   promptNegative: '',
+  promptOverride: '',
   sourceShotIds: [],
   mergedSourceShotIds: [],
   width: 1280,
@@ -51,6 +52,8 @@ const cancellingPromptId = ref('');
 const previewing = ref(null);
 const scriptModalOpen = ref(false);
 const scriptModalMode = ref('preview');
+const scriptPrompt = ref('');
+const optimizingPrompt = ref(false);
 
 const addOpen = ref(false);
 const addForm = reactive({ name: '', remark: '' });
@@ -62,7 +65,7 @@ const shots = computed(() => (chapter.value && chapter.value.shots) || []);
 const selected = computed(() => shots.value.find((s) => s.shotId === selectedId.value) || null);
 const limits = computed(() => options.value.limits || {});
 const active = computed(() => job.value && (job.value.status === 'queued' || job.value.status === 'running'));
-const aggregatedPrompt = computed(() =>
+const aggregatedPrompt = computed(() => draft.promptOverride ||
   [draft.promptBackground, draft.promptStoryboard, draft.promptNegative]
     .map((part) => String(part || '').trim())
     .filter(Boolean)
@@ -115,9 +118,10 @@ function loadDraft(shot) {
     remark: shot.remark || '',
     firstFrame: shot.firstFrame || '',
     lastFrame: shot.lastFrame || '',
-    promptBackground: shot.promptBackground ?? "故事背景：\n" + [project.value?.background, chapter.value?.introduction].filter(Boolean).join('\n---------------场景描述-------------\n'),
+    promptBackground: shot.promptBackground ?? project.value?.background ?? '',
     promptStoryboard: shot.promptStoryboard || STORYBOARD_PLACEHOLDER,
     promptNegative: shot.promptNegative || NEGATIVE_PLACEHOLDER,
+    promptOverride: shot.promptOverride || '',
     sourceShotIds: [...(shot.sourceShotIds || [])],
     mergedSourceShotIds: [...(shot.mergedSourceShotIds || shot.sourceShotIds || [])],
     width: shot.width,
@@ -176,9 +180,6 @@ async function load() {
 
 async function saveChapter() {
   if (chapterIntroduction.value === lastSavedIntroduction.value) return true;
-  const currentBefore = selected.value;
-  const refreshBackground = currentBefore && currentBefore.promptBackgroundAuto !== false &&
-    draft.promptBackground === (currentBefore.promptBackground ?? [project.value?.background, lastSavedIntroduction.value].filter(Boolean).join('\n-------\n'));
   savingChapter.value = true;
   error.value = '';
   try {
@@ -188,10 +189,6 @@ async function saveChapter() {
     chapter.value = saved;
     chapterIntroduction.value = saved.introduction || '';
     lastSavedIntroduction.value = chapterIntroduction.value;
-    if (refreshBackground) {
-      const currentAfter = shots.value.find((shot) => shot.shotId === selectedId.value);
-      if (currentAfter) draft.promptBackground = currentAfter.promptBackground || '';
-    }
     notice.value = '章节介绍已自动保存';
     setTimeout(() => (notice.value = ''), 2000);
     return true;
@@ -257,6 +254,7 @@ async function save() {
           promptBackground: draft.promptBackground,
           promptStoryboard: draft.promptStoryboard,
           promptNegative: draft.promptNegative,
+          promptOverride: draft.promptOverride,
           width: draft.width,
           height: draft.height,
           duration: draft.duration,
@@ -277,15 +275,41 @@ async function save() {
 
 function openScriptPreview() {
   scriptModalMode.value = 'preview';
+  scriptPrompt.value = aggregatedPrompt.value;
   scriptModalOpen.value = true;
 }
 
 function requestGenerate() {
   scriptModalMode.value = 'generate';
+  scriptPrompt.value = aggregatedPrompt.value;
   scriptModalOpen.value = true;
 }
 
+async function optimizePrompt() {
+  if (optimizingPrompt.value || !scriptPrompt.value.trim()) return;
+  optimizingPrompt.value = true;
+  error.value = '';
+  try {
+    const result = await api.optimizePrompt(scriptPrompt.value);
+    scriptPrompt.value = result.prompt;
+  } catch (err) {
+    error.value = err.message;
+  } finally {
+    optimizingPrompt.value = false;
+  }
+}
+
+function applyScriptPrompt() {
+  draft.promptOverride = scriptPrompt.value.trim();
+}
+
+async function confirmScriptPreview() {
+  applyScriptPrompt();
+  scriptModalOpen.value = false;
+}
+
 async function confirmGenerate() {
+  applyScriptPrompt();
   scriptModalOpen.value = false;
   await generate();
 }
@@ -601,16 +625,16 @@ onUnmounted(stopPolling);
 
               <div class="prompt-parts">
                 <label>
-                  <span>背景（故事背景 + 章节介绍）</span>
-                  <textarea v-model="draft.promptBackground" rows="6" placeholder="项目故事背景\n-------\n章节介绍" />
+                  <span>背景（项目故事背景）</span>
+                  <textarea v-model="draft.promptBackground" rows="6" placeholder="项目故事背景" @input="draft.promptOverride = ''" />
                 </label>
                 <label>
                   <span>故事板</span>
-                  <textarea v-model="draft.promptStoryboard" rows="12" :placeholder="STORYBOARD_PLACEHOLDER" />
+                  <textarea v-model="draft.promptStoryboard" rows="12" :placeholder="STORYBOARD_PLACEHOLDER" @input="draft.promptOverride = ''" />
                 </label>
                 <label>
                   <span>约束（负向提示词）</span>
-                  <textarea v-model="draft.promptNegative" rows="4" :placeholder="NEGATIVE_PLACEHOLDER" />
+                  <textarea v-model="draft.promptNegative" rows="4" :placeholder="NEGATIVE_PLACEHOLDER" @input="draft.promptOverride = ''" />
                 </label>
               </div>
 
@@ -656,21 +680,23 @@ onUnmounted(stopPolling);
         <p class="muted">
           以下内容由背景、故事板和约束按顺序聚合，段落之间保留一个空行，并将作为视频生成的提示词输入。
         </p>
-        <textarea :value="aggregatedPrompt" rows="20" class="mono" readonly placeholder="剧本内容为空" />
-        <span class="muted script-count">共 {{ aggregatedPrompt.length }} 个字符</span>
+        <textarea v-model="scriptPrompt" rows="20" class="mono" placeholder="剧本内容为空" />
+        <span class="muted script-count">共 {{ scriptPrompt.length }} 个字符</span>
       </div>
       <template #footer>
-        <button type="button" class="ghost-btn" @click="scriptModalOpen = false">
+        <button type="button" class="ghost-btn" :disabled="optimizingPrompt" @click="scriptModalOpen = false">
           {{ scriptModalMode === 'generate' ? '返回修改' : '关闭' }}
         </button>
+        <button type="button" class="ghost-btn" :disabled="optimizingPrompt || !scriptPrompt.trim()" @click="optimizePrompt">
+          {{ optimizingPrompt ? 'AI优化中…' : 'AI优化提示词' }}
+        </button>
         <button
-          v-if="scriptModalMode === 'generate'"
           type="button"
           class="primary"
-          :disabled="!aggregatedPrompt || generating"
-          @click="confirmGenerate"
+          :disabled="!scriptPrompt.trim() || optimizingPrompt || generating"
+          @click="scriptModalMode === 'generate' ? confirmGenerate() : confirmScriptPreview()"
         >
-          确认并生成
+          {{ scriptModalMode === 'generate' ? '确认并生成' : '确认修改' }}
         </button>
       </template>
     </Modal>
