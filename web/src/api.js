@@ -53,6 +53,7 @@ export const api = {
 
   // AI
   optimizePrompt: (prompt) => post('/api/ai/optimize-prompt', { prompt }),
+  generateScript: (data) => post('/api/ai/generate-script', data),
 
   // assets
   assets: (params) => request(`/api/assets?${qs(params)}`),

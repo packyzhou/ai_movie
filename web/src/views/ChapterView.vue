@@ -38,8 +38,11 @@ const loading = ref(true);
 const error = ref('');
 const notice = ref('');
 const saving = ref(false);
+const generatingScript = ref(false);
 const generating = ref(false);
 const merging = ref(false);
+const batch = reactive({ running: false, cancelling: false, cancelRequested: false, index: 0, total: 0, currentShotId: '', currentPromptId: '', currentProgress: 0, message: '' });
+let batchRun = 0;
 const draggingId = ref('');
 const sourceDraggingId = ref('');
 const mergeSelection = ref([]);
@@ -200,6 +203,40 @@ async function saveChapter() {
   }
 }
 
+async function generateScript() {
+  if (generatingScript.value) return;
+  error.value = '';
+  if (!chapterIntroduction.value.trim()) {
+    error.value = '请先填写章节介绍';
+    return;
+  }
+  if (shots.value.length && !confirm('当前章节已有镜头，继续生成会追加新的镜头，是否继续？')) return;
+  if (!(await saveChapter())) return;
+
+  generatingScript.value = true;
+  try {
+    const { shots: generatedShots } = await api.generateScript({
+      chapterName: chapter.value.title,
+      chapterIntroduction: chapterIntroduction.value,
+      projectBackground: project.value?.background || '',
+    });
+    if (!generatedShots.length) throw new Error('AI未生成有效镜头');
+    const createdShots = [];
+    for (const generated of generatedShots) {
+      const { shot } = await api.createShot(props.projectId, props.chapterId, generated);
+      createdShots.push(shot);
+    }
+    chapter.value.shots.push(...createdShots);
+    notice.value = `已生成并添加 ${createdShots.length} 个镜头`;
+    setTimeout(() => (notice.value = ''), 3000);
+    if (createdShots.length) select(createdShots[0]);
+  } catch (err) {
+    error.value = err.message;
+  } finally {
+    generatingScript.value = false;
+  }
+}
+
 async function addShot() {
   addError.value = '';
   if (!addForm.name.trim()) {
@@ -303,7 +340,7 @@ function applyScriptPrompt() {
   draft.promptOverride = scriptPrompt.value.trim();
 }
 
-async function confirmScriptPreview() {
+function confirmScriptPreview() {
   applyScriptPrompt();
   scriptModalOpen.value = false;
 }
@@ -333,6 +370,93 @@ async function generate() {
     error.value = err.message;
   } finally {
     generating.value = false;
+  }
+}
+
+async function waitForBatchShot(shotId, runId) {
+  while (runId === batchRun) {
+    const res = await api.chapter(props.projectId, props.chapterId);
+    chapter.value = res.chapter;
+    const current = shots.value.find((shot) => shot.shotId === shotId);
+    if (!current) throw new Error('镜头不存在');
+    if (current.shotId === selectedId.value) job.value = current.job || null;
+    batch.currentProgress = percentOf(current);
+    if (stateOf(current) === 'completed') return current;
+    if (stateOf(current) === 'failed') return null;
+    await new Promise((resolve) => setTimeout(resolve, options.value.pollIntervalMs || 1500));
+  }
+  return null;
+}
+
+async function cancelBatch() {
+  if (!batch.running || batch.cancelling) return;
+  batch.cancelling = true;
+  batch.cancelRequested = true;
+  try {
+    await api.cancel(batch.currentPromptId || 'active');
+  } catch (err) {
+    error.value = err.message;
+  } finally {
+    batch.cancelling = false;
+  }
+}
+
+async function generateBatch() {
+  if (batch.running || generating.value || merging.value) return;
+  error.value = '';
+  if (!(await save())) return;
+  const targets = shots.value.filter((shot) => !shot.disabled && !shot.merged && stateOf(shot) !== 'running');
+  if (!targets.length) {
+    error.value = '没有可生成的镜头';
+    return;
+  }
+  if (targets.length < 2) {
+    error.value = '至少需要两个镜头才能批量生成并自动合成';
+    return;
+  }
+  if (!confirm(`将按顺序生成 ${targets.length} 个镜头，并在全部成功后自动合成，是否继续？`)) return;
+
+  stopPolling();
+  batchRun += 1;
+  const runId = batchRun;
+  Object.assign(batch, {
+    running: true, cancelling: false, cancelRequested: false, index: 0, total: targets.length,
+    currentShotId: '', currentPromptId: '', currentProgress: 0, message: '准备开始',
+  });
+  const successful = [];
+  try {
+    for (const [index, target] of targets.entries()) {
+      if (runId !== batchRun || batch.cancelRequested) break;
+      batch.index = index + 1;
+      batch.currentShotId = target.shotId;
+      batch.currentPromptId = '';
+      batch.currentProgress = 0;
+      batch.message = `正在生成：${target.name}（${index + 1}/${targets.length}）`;
+      const res = await api.generate({ projectId: props.projectId, chapterId: props.chapterId, shotId: target.shotId });
+      batch.currentPromptId = res.promptId;
+      const shotIndex = shots.value.findIndex((shot) => shot.shotId === target.shotId);
+      if (shotIndex >= 0) chapter.value.shots[shotIndex] = res.shot;
+      const completed = await waitForBatchShot(target.shotId, runId);
+      if (!completed) {
+        if (!batch.cancelRequested) error.value = `镜头「${target.name}」生成失败，批量任务已停止`;
+        break;
+      }
+      successful.push(completed);
+    }
+    if (runId === batchRun && !batch.cancelRequested && successful.length === targets.length) {
+      batch.message = '所有镜头生成完成，正在自动合成…';
+      await mergeShots(null, false, successful);
+    } else if (batch.cancelRequested) {
+      batch.message = '批量生成已中断';
+    }
+  } catch (err) {
+    error.value = err.message;
+  } finally {
+    if (runId === batchRun) {
+      batch.running = false;
+      batch.currentPromptId = '';
+      if (shots.value.some((shot) => stateOf(shot) === 'running')) startPolling();
+    }
   }
 }
 
@@ -388,15 +512,17 @@ async function dropOn(target) {
   }
 }
 
-async function mergeShots(targetShot = null) {
-  const shotIds = targetShot
-    ? [...draft.sourceShotIds]
-    : shots.value.filter((shot) => mergeSelection.value.includes(shot.shotId)).map((shot) => shot.shotId);
+async function mergeShots(targetShot = null, shouldConfirm = true, sourceShots = null) {
+  const shotIds = sourceShots
+    ? sourceShots.map((shot) => shot.shotId)
+    : targetShot
+      ? [...draft.sourceShotIds]
+      : shots.value.filter((shot) => mergeSelection.value.includes(shot.shotId)).map((shot) => shot.shotId);
   if (shotIds.length < 2) {
     error.value = '请先从镜头列表选择至少两个已完成镜头';
     return;
   }
-  if (!confirm(`确认按当前顺序合成选中的 ${shotIds.length} 个镜头？原镜头将保留并置灰。`)) return;
+  if (shouldConfirm && !confirm(`确认按当前顺序合成选中的 ${shotIds.length} 个镜头？原镜头将保留并置灰。`)) return;
   merging.value = true;
   error.value = '';
   stopPolling();
@@ -492,16 +618,26 @@ onUnmounted(stopPolling);
     <p v-if="error" class="error page-error">{{ error }}</p>
 
     <section v-if="chapter" class="chapter-introduction">
-      <label>
+      <div class="chapter-introduction-head">
+        <label>
         <span>章节介绍 <small class="muted">（离开输入框后自动保存）</small></span>
         <textarea
           v-model="chapterIntroduction"
-          rows="3"
+          rows="6"
           maxlength="5000"
           placeholder="输入本章节的背景、人物和剧情概述，新增镜头会复用该内容。"
           @blur="saveChapter"
         />
-      </label>
+        </label>
+        <div class="chapter-introduction-actions">
+          <button type="button" class="primary" :disabled="generatingScript || savingChapter" @click="generateScript">
+            {{ generatingScript ? 'AI生成剧本中…' : '生成剧本' }}
+          </button>
+          <button type="button" class="primary" :disabled="batch.running || generating || merging" @click="generateBatch">
+            {{ batch.running ? '批量生成中…' : '镜头批量生成' }}
+          </button>
+        </div>
+      </div>
       <span v-if="savingChapter" class="muted auto-saving">自动保存中…</span>
     </section>
 
@@ -511,10 +647,23 @@ onUnmounted(stopPolling);
         <div class="shots-head">
           <span>镜头列表</span>
           <div class="head-actions">
-            <button type="button" class="ghost-btn small" :disabled="merging || mergeSelection.length < 2" @click="mergeShots()">
+            <button type="button" class="ghost-btn small" :disabled="batch.running || merging || mergeSelection.length < 2" @click="mergeShots()">
               {{ merging ? '合成中…' : `合成 (${mergeSelection.length})` }}
             </button>
-            <button type="button" class="ghost-btn small" @click="addOpen = true">+ 添加</button>
+            <button type="button" class="ghost-btn small" :disabled="batch.running" @click="addOpen = true">+ 添加</button>
+          </div>
+        </div>
+        <div v-if="batch.running || batch.message" class="batch-progress">
+          <div class="batch-progress-head">
+            <span>{{ batch.message }}</span>
+            <button v-if="batch.running" type="button" class="link danger" :disabled="batch.cancelling" @click="cancelBatch">
+              {{ batch.cancelling ? '中断中…' : '中断' }}
+            </button>
+          </div>
+          <div class="progress-track"><span :style="{ width: `${batch.total ? Math.round(((batch.index - 1 + batch.currentProgress / 100) / batch.total) * 100) : 0}%` }" /></div>
+          <div class="batch-progress-meta">
+            <span>整体进度 {{ batch.index }}/{{ batch.total }}</span>
+            <span v-if="batch.currentShotId">当前镜头 {{ batch.currentProgress }}%</span>
           </div>
         </div>
         <ul>
@@ -660,7 +809,7 @@ onUnmounted(stopPolling);
               <div class="actions">
                 <button type="button" class="ghost-btn" @click="openScriptPreview">预览剧本</button>
                 <button type="button" class="ghost-btn" :disabled="saving || selected.disabled" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
-                <button type="button" class="primary" :disabled="generating || active || selected.disabled" @click="requestGenerate">{{ generating ? '提交中…' : active ? '生成中…' : '生成视频' }}</button>
+                <button type="button" class="primary" :disabled="batch.running || generating || active || selected.disabled" @click="requestGenerate">{{ generating ? '提交中…' : active ? '生成中…' : '生成视频' }}</button>
               </div>
             </template>
           </section>
@@ -770,6 +919,19 @@ onUnmounted(stopPolling);
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
+.chapter-introduction-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+.chapter-introduction-head label {
+  flex: 1;
+}
+.chapter-introduction-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .body {
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
@@ -793,6 +955,42 @@ onUnmounted(stopPolling);
 .head-actions {
   display: flex;
   gap: 6px;
+}
+.batch-progress {
+  margin: 0 4px 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+.batch-progress-head,
+.batch-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.batch-progress-head {
+  margin-bottom: 8px;
+  color: var(--text);
+}
+.batch-progress-meta {
+  margin-top: 6px;
+  color: var(--muted);
+}
+.batch-progress .progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface);
+}
+.batch-progress .progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #6366f1, #22d3ee);
+  transition: width .3s ease;
 }
 .shots ul {
   list-style: none;
