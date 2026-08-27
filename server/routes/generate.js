@@ -137,7 +137,15 @@ router.post(
     }
     if (!result || !result.prompt_id) throw bad('ComfyUI did not return a prompt_id', 502);
 
-    const job = jobs.newJob(result.prompt_id, params, result.number);
+    const job = jobs.newJob(result.prompt_id, {
+      ...params,
+      __progress: {
+        username: req.user,
+        projectId: project.projectId,
+        chapterId: chapter.chapterId,
+        shotId: shot.shotId,
+      },
+    }, result.number);
     shot.job = shotjobs.queued(job.promptId);
     projects.persist(req.user, project);
 

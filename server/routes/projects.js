@@ -16,17 +16,16 @@ const INTRODUCTION_MAX = 5000;
 const STORYBOARD_DEFAULT = '场景描述：\nxxx\n\n要求：\nxxx。\n\n剧情：\n[0-2秒] 镜头一：xxx。\n[2-3秒] 镜头二：xxx。\n[0-2秒] 镜头三：xxx。\n\n镜头：\n变形宽银幕镜头，浅景深，焦点依次在男人脸部、外星生物脸部。镜头一从男人正面旋转到身后；镜头二跟随奔跑；镜头三拉远稳定。人物高度过渡平滑，背景透视自然。\n\n音频：\n外星生物用虚弱的外星语说：xxx\n\n字幕：\n字幕仅在外星生物说话时出现，约从3.2秒到5秒。双语字幕：中文在上，外星语在下，居中位于画面下方三分之一处。';
 const NEGATIVE_DEFAULT = '否定约束：\n无动画、卡通或过度CG感，保持实拍质感。无其他人、无复制人、无变形、无畸变。男人和外星生物形状均不得改变，人物造型不得变化，不得出现奇怪的手。三视图、参考图不得出现在任何一帧。背景不偏离城市街道。无灯光闪烁。无跳切。除指定字幕外，无额外文字、标志、水印。背景音乐不得压过语音。';
 
-function chapterBackground(project) {
-  return "项目简介：\n"+String(project.background || '').trim();
+function chapterBackground() {
+  return '';
 }
 
-function syncShotBackgrounds(project, resetOverrides = false) {
-  const background = chapterBackground(project);
+function syncShotBackgrounds(project) {
+  const background = chapterBackground();
   (project.chapters || []).forEach((chapter) => {
     (chapter.shots || []).forEach((shot) => {
       if (!shot.merged) {
         shot.promptBackground = background;
-        if (resetOverrides) shot.promptOverride = '';
         shot.prompt = promptOf(shot);
       }
     });
@@ -35,8 +34,8 @@ function syncShotBackgrounds(project, resetOverrides = false) {
 
 function promptOf(shot) {
   if (String(shot.promptOverride || '').trim()) return String(shot.promptOverride).trim();
-  if (shot.promptBackground !== undefined || shot.promptStoryboard !== undefined || shot.promptNegative !== undefined) {
-    return [shot.promptBackground, shot.promptStoryboard, shot.promptNegative]
+  if (shot.promptStoryboard !== undefined || shot.promptNegative !== undefined) {
+    return [shot.promptStoryboard, shot.promptNegative]
       .map((part) => String(part || '').trim())
       .filter(Boolean)
       .join('\n\n');
@@ -166,7 +165,7 @@ router.put(
     if (body.chapters !== undefined) patch.chapters = normalizeChapters(body.chapters, existing.chapters || []);
 
     const nextProject = { ...existing, ...patch };
-    if (body.background !== undefined) syncShotBackgrounds(nextProject, true);
+    if (body.background !== undefined) syncShotBackgrounds(nextProject);
     res.json({ project: store.projects.update(req.user, req.params.projectId, body.background !== undefined ? { ...patch, chapters: nextProject.chapters } : patch) });
   })
 );
@@ -241,8 +240,8 @@ router.post(
       remark: String(body.remark || '').trim().slice(0, 500),
       firstFrame: '',
       lastFrame: '',
-      promptBackground: chapterBackground(project),
-      promptBackgroundAuto: true,
+      promptBackground: '',
+      promptBackgroundAuto: false,
       promptStoryboard: String(body.promptStoryboard || '').trim().slice(0, 10000) || STORYBOARD_DEFAULT,
       promptNegative: String(body.promptNegative || '').trim().slice(0, 10000) || NEGATIVE_DEFAULT,
       promptOverride: '',
@@ -369,7 +368,7 @@ router.put(
 );
 
 const SHOT_FIELDS = [
-  'name', 'remark', 'firstFrame', 'lastFrame', 'promptBackground', 'promptStoryboard', 'promptNegative', 'promptOverride',
+  'name', 'remark', 'firstFrame', 'lastFrame', 'promptStoryboard', 'promptNegative', 'promptOverride',
   'width', 'height', 'duration',
 ];
 
@@ -386,9 +385,6 @@ router.put(
       if (field === 'name') shot.name = requireText(body.name, 'Shot name', 120);
       else if (['width', 'height', 'duration'].includes(field)) shot[field] = Number(body[field]);
       else shot[field] = String(body[field] || '');
-    }
-    if (!shot.merged && body.promptBackground !== undefined) {
-      shot.promptBackgroundAuto = shot.promptBackground === chapterBackground(project);
     }
     if (shot.merged && body.sourceShotIds !== undefined) {
       const sourceShotIds = Array.isArray(body.sourceShotIds) ? body.sourceShotIds.map(String) : [];

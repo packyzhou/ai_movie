@@ -11,6 +11,7 @@
 const jobs = require('./jobs');
 const comfy = require('./comfy');
 const archive = require('./archive');
+const progress = require('./progress');
 
 /** Shot job states used by the UI. */
 const PENDING = 'pending'; // never generated
@@ -131,15 +132,30 @@ async function refreshShot(shot, ctx) {
     return changed;
   }
 
+  const checkpoint = progress.find(ctx.username, cur.promptId);
+  if (checkpoint) {
+    Object.assign(cur, {
+      status: checkpoint.status || cur.status,
+      progress: Number.isFinite(checkpoint.progress) ? checkpoint.progress : cur.progress,
+      step: checkpoint.step ?? cur.step,
+      totalSteps: checkpoint.totalSteps ?? cur.totalSteps,
+      node: checkpoint.node ?? cur.node,
+      queueRemaining: checkpoint.queueRemaining ?? cur.queueRemaining,
+      message: checkpoint.message || cur.message,
+      error: checkpoint.error || cur.error,
+    });
+    shot.job = cur;
+  }
+
   let live = await jobs.refresh(cur.promptId).catch(() => null);
   if (!live) {
     // Server restarted: rebuild completed jobs from history, or in-flight jobs from the queue.
     const history = await comfy.getHistory(cur.promptId).catch(() => null);
     if (history) {
-      live = jobs.applyHistory(jobs.newJob(cur.promptId, {}, null), history);
+      live = jobs.applyHistory(jobs.newJob(cur.promptId, { __progress: ctx }, null), history);
     } else {
       const queue = await comfy.getQueue().catch(() => null);
-      live = jobs.recoverFromQueue(cur.promptId, queue, cur);
+      live = jobs.recoverFromQueue(cur.promptId, queue, cur, ctx);
     }
     if (!live) {
       // ComfyUI forgot the prompt from both history and its active queue.
@@ -152,7 +168,9 @@ async function refreshShot(shot, ctx) {
     }
   }
 
-  return applyLive(shot, live, { ...ctx, shotId: shot.shotId });
+  const changed = await applyLive(shot, live, { ...ctx, shotId: shot.shotId });
+  progress.save(ctx.username, shot.job, { ...ctx, shotId: shot.shotId });
+  return changed;
 }
 
 /** Refresh every shot in a chapter. Returns true when anything changed. */

@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const comfy = require('./comfy');
 const config = require('./config');
+const progress = require('./progress');
 
 const CLIENT_ID = `ai-movie-${crypto.randomBytes(6).toString('hex')}`;
 const MAX_JOBS = 200;
@@ -29,6 +30,7 @@ function newJob(promptId, params, queueNumber) {
     finishedAt: null,
   };
   jobs.set(promptId, job);
+  if (params && params.__progress) progress.save(params.__progress.username, job, params.__progress);
   // Bound memory: drop the oldest finished jobs first.
   if (jobs.size > MAX_JOBS) {
     const oldest = [...jobs.values()].sort((a, b) => a.createdAt - b.createdAt);
@@ -48,14 +50,14 @@ function list(limit = 20) {
   return [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
 }
 
-function recoverFromQueue(promptId, queue, previous = {}) {
+function recoverFromQueue(promptId, queue, previous = {}, metadata = {}) {
   const running = (queue && queue.queue_running || []).find((item) => item[1] === promptId);
   const pending = queue && queue.queue_pending || [];
   const pendingIndex = pending.findIndex((item) => item[1] === promptId);
   if (!running && pendingIndex < 0) return null;
 
   const entry = running || pending[pendingIndex];
-  const job = newJob(promptId, {}, entry && entry[0]);
+  const job = newJob(promptId, { __progress: metadata }, entry && entry[0]);
   // Preserve the last progress checkpoint stored on the shot. ComfyUI does
   // not replay old websocket progress events after a client reconnects.
   job.progress = Number(previous.progress) || 0;
@@ -140,6 +142,11 @@ function applyHistory(job, history) {
   return job;
 }
 
+function persistProgress(job) {
+  const metadata = job && job.params && job.params.__progress;
+  if (metadata) progress.save(metadata.username, job, metadata);
+}
+
 // --- live progress over the ComfyUI websocket -------------------------------
 
 comfy.openProgressSocket(CLIENT_ID, (msg) => {
@@ -151,7 +158,10 @@ comfy.openProgressSocket(CLIENT_ID, (msg) => {
       const remaining =
         data.status && data.status.exec_info ? data.status.exec_info.queue_remaining : null;
       for (const j of jobs.values()) {
-        if (j.status === 'queued' || j.status === 'running') j.queueRemaining = remaining;
+        if (j.status === 'queued' || j.status === 'running') {
+          j.queueRemaining = remaining;
+          persistProgress(j);
+        }
       }
       break;
     }
@@ -209,6 +219,7 @@ comfy.openProgressSocket(CLIENT_ID, (msg) => {
     default:
       break;
   }
+  persistProgress(job);
 });
 
 /**

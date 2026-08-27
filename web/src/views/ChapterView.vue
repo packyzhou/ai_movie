@@ -23,7 +23,6 @@ const draft = reactive({
   remark: '',
   firstFrame: '',
   lastFrame: '',
-  promptBackground: '',
   promptStoryboard: '',
   promptNegative: '',
   promptOverride: '',
@@ -69,7 +68,7 @@ const selected = computed(() => shots.value.find((s) => s.shotId === selectedId.
 const limits = computed(() => options.value.limits || {});
 const active = computed(() => job.value && (job.value.status === 'queued' || job.value.status === 'running'));
 const aggregatedPrompt = computed(() => draft.promptOverride ||
-  [draft.promptBackground, draft.promptStoryboard, draft.promptNegative]
+  [draft.promptStoryboard, draft.promptNegative]
     .map((part) => String(part || '').trim())
     .filter(Boolean)
     .join('\n\n')
@@ -85,6 +84,8 @@ const selectedBatchShots = computed(() => shots.value.filter((shot) =>
   mergeSelection.value.includes(shot.shotId) && !shot.disabled && !shot.merged
 ));
 const selectedBatchTargets = computed(() => selectedBatchShots.value.filter((shot) => stateOf(shot) !== 'running'));
+const canBatchDelete = computed(() => selectedBatchShots.value.length > 0 &&
+  selectedBatchShots.value.every((shot) => stateOf(shot) !== 'running'));
 const canMergeSelection = computed(() => selectedBatchShots.value.length >= 2 &&
   selectedBatchShots.value.every((shot) => stateOf(shot) === 'completed' && previewOf(shot)));
 
@@ -127,7 +128,6 @@ function loadDraft(shot) {
     remark: shot.remark || '',
     firstFrame: shot.firstFrame || '',
     lastFrame: shot.lastFrame || '',
-    promptBackground: shot.promptBackground ?? project.value?.background ?? '',
     promptStoryboard: shot.promptStoryboard || STORYBOARD_PLACEHOLDER,
     promptNegative: shot.promptNegative || NEGATIVE_PLACEHOLDER,
     promptOverride: shot.promptOverride || '',
@@ -282,6 +282,30 @@ async function removeShot(shot) {
   }
 }
 
+async function removeSelectedShots() {
+  if (!canBatchDelete.value || batch.running || merging.value) return;
+  const targets = [...selectedBatchShots.value];
+  if (!confirm(`确认删除选中的 ${targets.length} 个镜头？该操作不可撤销。`)) return;
+  error.value = '';
+  try {
+    for (const shot of targets) {
+      await api.deleteShot(props.projectId, props.chapterId, shot.shotId);
+    }
+    mergeSelection.value = mergeSelection.value.filter((id) => !targets.some((shot) => shot.shotId === id));
+    if (targets.some((shot) => shot.shotId === selectedId.value)) {
+      stopPolling();
+      selectedId.value = '';
+      job.value = null;
+    }
+    await load();
+    notice.value = `已删除 ${targets.length} 个镜头`;
+    setTimeout(() => (notice.value = ''), 3000);
+  } catch (err) {
+    error.value = err.message;
+    await load();
+  }
+}
+
 async function save() {
   if (!selected.value) return null;
   saving.value = true;
@@ -294,7 +318,6 @@ async function save() {
           remark: draft.remark,
           firstFrame: draft.firstFrame,
           lastFrame: draft.lastFrame,
-          promptBackground: draft.promptBackground,
           promptStoryboard: draft.promptStoryboard,
           promptNegative: draft.promptNegative,
           promptOverride: draft.promptOverride,
@@ -642,6 +665,7 @@ onUnmounted(stopPolling);
           <button type="button" class="primary" :disabled="batch.running || generating || merging || selectedBatchTargets.length < 2" title="请先在镜头列表中选择至少两个未在生成中的镜头" @click="generateBatch">
             {{ batch.running ? '批量生成中…' : '镜头批量生成' }}
           </button>
+          <button type="button" class="ghost-btn danger-btn" :disabled="batch.running || generating || merging || !canBatchDelete" title="请选择未在生成中的镜头" @click="removeSelectedShots">镜头批量删除</button>
         </div>
       </div>
       <span v-if="savingChapter" class="muted auto-saving">自动保存中…</span>
@@ -688,7 +712,7 @@ onUnmounted(stopPolling);
               class="merge-check"
               :checked="mergeSelection.includes(s.shotId)"
               :disabled="s.disabled || s.merged || batch.running"
-              title="选择镜头（用于批量生成或合成）"
+              title="选择镜头（用于批量生成、删除或合成）"
               @click.stop="toggleMergeSelection(s.shotId)"
             />
             <button type="button" class="shot" :class="{ active: s.shotId === selectedId }" @click="select(s)">
@@ -780,10 +804,6 @@ onUnmounted(stopPolling);
               <p class="muted small frame-hint">不填写首帧和尾帧时，将直接使用提示词进行文生视频。</p>
 
               <div class="prompt-parts">
-                <label>
-                  <span>背景（项目故事背景）</span>
-                  <textarea v-model="draft.promptBackground" rows="6" placeholder="项目故事背景" @input="draft.promptOverride = ''" />
-                </label>
                 <label>
                   <span>故事板</span>
                   <textarea v-model="draft.promptStoryboard" rows="12" :placeholder="STORYBOARD_PLACEHOLDER" @input="draft.promptOverride = ''" />
