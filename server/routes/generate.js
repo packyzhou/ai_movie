@@ -94,6 +94,7 @@ router.post(
 
     const template = store.templates.find(req.user, project.templateId);
     if (!template) throw bad(`Project template "${project.templateId}" no longer exists`);
+    if ((template.type || 'video') !== 'video') throw bad(`Project template "${template.name}" is not a video template`);
 
     const sourceGraph = tpl.loadGraph(template.templateId);
     // Older rows may have been created before snake_case/custom-node binding
@@ -107,14 +108,18 @@ router.post(
       throw bad(`Template "${template.name}" has no binding for: ${missing.join(', ')}`);
     }
 
+    const hasFrames = Boolean(shot.firstFrame || shot.lastFrame);
+    const generationBindings = hasFrames
+      ? bindings
+      : Object.fromEntries(Object.entries(bindings).filter(([key]) => key !== 'firstFrame' && key !== 'lastFrame'));
     const [firstFrame, lastFrame] = await Promise.all([
-      bindings.firstFrame ? pushFrame(shot.firstFrame, 'First frame') : Promise.resolve(''),
-      bindings.lastFrame ? pushFrame(shot.lastFrame, 'Last frame') : Promise.resolve(''),
+      hasFrames && bindings.firstFrame ? pushFrame(shot.firstFrame, 'First frame') : Promise.resolve(''),
+      hasFrames && bindings.lastFrame ? pushFrame(shot.lastFrame, 'Last frame') : Promise.resolve(''),
     ]);
 
     const { graph, params } = workflow.build(
       sourceGraph,
-      bindings,
+      generationBindings,
       {
         firstFrame,
         lastFrame,

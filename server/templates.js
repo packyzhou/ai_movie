@@ -138,12 +138,14 @@ function deriveBindings(graph) {
     ? { path: `${seedNode[0]}.inputs.${'noise_seed' in seedNode[1].inputs ? 'noise_seed' : 'seed'}` }
     : null;
 
-  // MiniMax H3 T2V exposes `first_frame` as its text prompt and may use a
-  // fixed duration, so those two UI fields are intentionally not required for
-  // that workflow shape. All other templates retain the six-field contract.
-  const optional = videoNode && 'first_frame' in videoNode[1].inputs
-    ? ['firstFrame', 'duration']
-    : [];
+  // Prompt-only video workflows have no frame inputs, so frames are optional.
+  // MiniMax H3 T2V may also expose `first_frame` as its text prompt and use a
+  // fixed duration. Image-to-video workflows retain the frame requirements.
+  const optional = !bindings.firstFrame && !bindings.lastFrame
+    ? ['firstFrame', 'lastFrame']
+    : videoNode && 'first_frame' in videoNode[1].inputs
+      ? ['firstFrame', 'duration']
+      : [];
   const missing = ['firstFrame', 'lastFrame', 'prompt', 'width', 'height', 'duration'].filter(
     (k) => !bindings[k] && !optional.includes(k)
   );

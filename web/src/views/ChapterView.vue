@@ -81,9 +81,15 @@ const mergedSources = computed(() => {
 const mergeOrderChanged = computed(() =>
   JSON.stringify(draft.sourceShotIds || []) !== JSON.stringify(draft.mergedSourceShotIds || [])
 );
+const selectedBatchShots = computed(() => shots.value.filter((shot) =>
+  mergeSelection.value.includes(shot.shotId) && !shot.disabled && !shot.merged
+));
+const selectedBatchTargets = computed(() => selectedBatchShots.value.filter((shot) => stateOf(shot) !== 'running'));
+const canMergeSelection = computed(() => selectedBatchShots.value.length >= 2 &&
+  selectedBatchShots.value.every((shot) => stateOf(shot) === 'completed' && previewOf(shot)));
 
-// Both frames present -> image-to-video; prompt only -> text-to-video.
-const mode = computed(() => (draft.firstFrame && draft.lastFrame ? '图生视频' : '文生视频'));
+// Frames are optional: without either frame the workflow runs in text-to-video mode.
+const mode = computed(() => (draft.firstFrame || draft.lastFrame ? '图生视频' : '文生视频'));
 
 function stateOf(shot) {
   const status = shot.job?.status || 'pending';
@@ -405,13 +411,13 @@ async function generateBatch() {
   if (batch.running || generating.value || merging.value) return;
   error.value = '';
   if (!(await save())) return;
-  const targets = shots.value.filter((shot) => !shot.disabled && !shot.merged && stateOf(shot) !== 'running');
-  if (!targets.length) {
-    error.value = '没有可生成的镜头';
+  const targets = selectedBatchTargets.value;
+  if (!selectedBatchShots.value.length) {
+    error.value = '请先在镜头列表中选择要生成的镜头';
     return;
   }
   if (targets.length < 2) {
-    error.value = '至少需要两个镜头才能批量生成并自动合成';
+    error.value = '至少需要选择两个未在生成中的镜头';
     return;
   }
   if (!confirm(`将按顺序生成 ${targets.length} 个镜头，并在全部成功后自动合成，是否继续？`)) return;
@@ -633,7 +639,7 @@ onUnmounted(stopPolling);
           <button type="button" class="primary" :disabled="generatingScript || savingChapter" @click="generateScript">
             {{ generatingScript ? 'AI生成剧本中…' : '生成剧本' }}
           </button>
-          <button type="button" class="primary" :disabled="batch.running || generating || merging" @click="generateBatch">
+          <button type="button" class="primary" :disabled="batch.running || generating || merging || selectedBatchTargets.length < 2" title="请先在镜头列表中选择至少两个未在生成中的镜头" @click="generateBatch">
             {{ batch.running ? '批量生成中…' : '镜头批量生成' }}
           </button>
         </div>
@@ -647,7 +653,7 @@ onUnmounted(stopPolling);
         <div class="shots-head">
           <span>镜头列表</span>
           <div class="head-actions">
-            <button type="button" class="ghost-btn small" :disabled="batch.running || merging || mergeSelection.length < 2" @click="mergeShots()">
+            <button type="button" class="ghost-btn small" :disabled="batch.running || merging || !canMergeSelection" @click="mergeShots()">
               {{ merging ? '合成中…' : `合成 (${mergeSelection.length})` }}
             </button>
             <button type="button" class="ghost-btn small" :disabled="batch.running" @click="addOpen = true">+ 添加</button>
@@ -681,8 +687,8 @@ onUnmounted(stopPolling);
               type="checkbox"
               class="merge-check"
               :checked="mergeSelection.includes(s.shotId)"
-              :disabled="s.disabled || stateOf(s) !== 'completed' || !previewOf(s)"
-              title="选择参与合成"
+              :disabled="s.disabled || s.merged || batch.running"
+              title="选择镜头（用于批量生成或合成）"
               @click.stop="toggleMergeSelection(s.shotId)"
             />
             <button type="button" class="shot" :class="{ active: s.shotId === selectedId }" @click="select(s)">
@@ -768,9 +774,10 @@ onUnmounted(stopPolling);
 
             <template v-else>
               <div class="frames">
-                <ImageField label="首帧 (first frame)" v-model="draft.firstFrame" :library="library" @uploaded="refreshLibrary" />
-                <ImageField label="尾帧 (last frame)" v-model="draft.lastFrame" :library="library" @uploaded="refreshLibrary" />
+                <ImageField label="首帧 (first frame，可选)" v-model="draft.firstFrame" :library="library" @uploaded="refreshLibrary" />
+                <ImageField label="尾帧 (last frame，可选)" v-model="draft.lastFrame" :library="library" @uploaded="refreshLibrary" />
               </div>
+              <p class="muted small frame-hint">不填写首帧和尾帧时，将直接使用提示词进行文生视频。</p>
 
               <div class="prompt-parts">
                 <label>

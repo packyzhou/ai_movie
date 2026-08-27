@@ -133,10 +133,16 @@ async function refreshShot(shot, ctx) {
 
   let live = await jobs.refresh(cur.promptId).catch(() => null);
   if (!live) {
-    // Server restarted: rebuild the job from ComfyUI's own history.
+    // Server restarted: rebuild completed jobs from history, or in-flight jobs from the queue.
     const history = await comfy.getHistory(cur.promptId).catch(() => null);
-    if (!history) {
-      // ComfyUI forgot the prompt. An in-flight job is now unrecoverable.
+    if (history) {
+      live = jobs.applyHistory(jobs.newJob(cur.promptId, {}, null), history);
+    } else {
+      const queue = await comfy.getQueue().catch(() => null);
+      live = jobs.recoverFromQueue(cur.promptId, queue, cur);
+    }
+    if (!live) {
+      // ComfyUI forgot the prompt from both history and its active queue.
       if (cur.status === QUEUED || cur.status === RUNNING) {
         shot.job = { ...cur, status: FAILED, error: 'ComfyUI 已不再持有该任务，请重新生成', message: '任务丢失' };
         return true;
@@ -144,7 +150,6 @@ async function refreshShot(shot, ctx) {
       shot.job = cur;
       return false;
     }
-    live = jobs.applyHistory(jobs.newJob(cur.promptId, {}, null), history);
   }
 
   return applyLive(shot, live, { ...ctx, shotId: shot.shotId });

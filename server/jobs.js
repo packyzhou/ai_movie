@@ -48,6 +48,29 @@ function list(limit = 20) {
   return [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
 }
 
+function recoverFromQueue(promptId, queue, previous = {}) {
+  const running = (queue && queue.queue_running || []).find((item) => item[1] === promptId);
+  const pending = queue && queue.queue_pending || [];
+  const pendingIndex = pending.findIndex((item) => item[1] === promptId);
+  if (!running && pendingIndex < 0) return null;
+
+  const entry = running || pending[pendingIndex];
+  const job = newJob(promptId, {}, entry && entry[0]);
+  // Preserve the last progress checkpoint stored on the shot. ComfyUI does
+  // not replay old websocket progress events after a client reconnects.
+  job.progress = Number(previous.progress) || 0;
+  job.step = previous.step ?? null;
+  job.totalSteps = previous.totalSteps ?? null;
+  job.message = previous.message || job.message;
+  if (running) {
+    markRunning(job, 'Execution resumed after server restart');
+  } else {
+    job.message = `Waiting in queue (position ${pendingIndex + 1})`;
+    job.queueRemaining = pendingIndex;
+  }
+  return job;
+}
+
 function markRunning(job, message) {
   if (job.status === 'queued') {
     job.status = 'running';
@@ -215,4 +238,4 @@ async function refresh(promptId) {
   return job;
 }
 
-module.exports = { CLIENT_ID, newJob, get, list, refresh, applyHistory, collectOutputs, pollIntervalMs: config.comfy.pollIntervalMs };
+module.exports = { CLIENT_ID, newJob, get, list, recoverFromQueue, refresh, applyHistory, collectOutputs, pollIntervalMs: config.comfy.pollIntervalMs };
