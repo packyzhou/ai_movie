@@ -43,6 +43,12 @@ function promptOf(shot) {
   return String(shot.prompt || '').trim();
 }
 
+function cleanSettingId(username, value) {
+  const id = String(value || '').trim();
+  if (id && !store.settings.find(username, id)) throw bad(`Unknown setting template "${id}"`);
+  return id;
+}
+
 function cleanStyleIds(username, value) {
   const ids = Array.isArray(value) ? value.map(String) : [];
   const unique = [...new Set(ids)];
@@ -98,6 +104,7 @@ function summarize(p) {
     projectId: p.projectId,
     name: p.name,
     templateId: p.templateId,
+    settingId: p.settingId || '',
     background: p.background,
     styleIds: p.styleIds || [],
     chapterCount: (p.chapters || []).length,
@@ -134,6 +141,7 @@ router.post(
       projectId: String(body.projectId || '').trim() || crypto.randomUUID(),
       name: requireText(body.name, 'Project name', 120),
       templateId,
+      settingId: cleanSettingId(req.user, body.settingId),
       background: String(body.background || '').trim().slice(0, BACKGROUND_MAX),
       styleIds: cleanStyleIds(req.user, body.styleIds),
       chapters: normalizeChapters(body.chapters || []),
@@ -158,6 +166,7 @@ router.put(
       if ((template.type || 'video') !== 'video') throw bad('Projects can only use video templates');
       patch.templateId = templateId;
     }
+    if (body.settingId !== undefined) patch.settingId = cleanSettingId(req.user, body.settingId);
     if (body.background !== undefined) {
       patch.background = String(body.background || '').trim().slice(0, BACKGROUND_MAX);
     }
@@ -211,6 +220,8 @@ router.get(
         projectId: project.projectId,
         name: project.name,
         templateId: project.templateId,
+        settingId: project.settingId || '',
+        setting: project.settingId ? store.settings.find(req.user, project.settingId) : null,
         background: project.background,
         styleIds: project.styleIds || [],
       },

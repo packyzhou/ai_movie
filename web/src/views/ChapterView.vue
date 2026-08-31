@@ -73,6 +73,11 @@ const aggregatedPrompt = computed(() => draft.promptOverride ||
     .filter(Boolean)
     .join('\n\n')
 );
+const promptWithSetting = computed(() => {
+  const setting = String(project.value?.setting?.content || '').trim();
+  const prompt = String(aggregatedPrompt.value || '').trim();
+  return setting && prompt.startsWith(setting) ? prompt : [setting, prompt].filter(Boolean).join('\n\n');
+});
 const mergedSources = computed(() => {
   const byId = new Map(shots.value.map((shot) => [shot.shotId, shot]));
   return (draft.sourceShotIds || []).map((id) => byId.get(id)).filter(Boolean);
@@ -225,6 +230,7 @@ async function generateScript() {
       chapterName: chapter.value.title,
       chapterIntroduction: chapterIntroduction.value,
       projectBackground: project.value?.background || '',
+      settingContent: project.value?.setting?.content || '',
     });
     if (!generatedShots.length) throw new Error('AI未生成有效镜头');
     const createdShots = [];
@@ -341,13 +347,13 @@ async function save() {
 
 function openScriptPreview() {
   scriptModalMode.value = 'preview';
-  scriptPrompt.value = aggregatedPrompt.value;
+  scriptPrompt.value = promptWithSetting.value;
   scriptModalOpen.value = true;
 }
 
 function requestGenerate() {
   scriptModalMode.value = 'generate';
-  scriptPrompt.value = aggregatedPrompt.value;
+  scriptPrompt.value = promptWithSetting.value;
   scriptModalOpen.value = true;
 }
 
@@ -356,7 +362,7 @@ async function optimizePrompt() {
   optimizingPrompt.value = true;
   error.value = '';
   try {
-    const result = await api.optimizePrompt(scriptPrompt.value);
+    const result = await api.optimizePrompt(scriptPrompt.value, project.value?.setting?.content || '');
     scriptPrompt.value = result.prompt;
   } catch (err) {
     error.value = err.message;
@@ -854,7 +860,7 @@ onUnmounted(stopPolling);
     >
       <div class="script-preview">
         <p class="muted">
-          以下内容由背景、故事板和约束按顺序聚合，段落之间保留一个空行，并将作为视频生成的提示词输入。
+          以下内容包含项目设定、故事板和约束，段落之间保留一个空行，并将作为视频生成的提示词输入。
         </p>
         <textarea v-model="scriptPrompt" rows="20" class="mono" placeholder="剧本内容为空" />
         <span class="muted script-count">共 {{ scriptPrompt.length }} 个字符</span>

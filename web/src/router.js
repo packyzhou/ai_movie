@@ -7,6 +7,7 @@ import Console from './views/Console.vue';
 import ProjectsView from './views/ProjectsView.vue';
 import TemplatesView from './views/TemplatesView.vue';
 import AssetsView from './views/AssetsView.vue';
+import SettingsView from './views/SettingsView.vue';
 import ChapterView from './views/ChapterView.vue';
 
 const routes = [
@@ -21,6 +22,7 @@ const routes = [
       { path: 'projects', name: 'projects', component: ProjectsView },
       { path: 'templates', name: 'templates', component: TemplatesView },
       { path: 'assets', name: 'assets', component: AssetsView },
+      { path: 'settings', name: 'settings', component: SettingsView },
     ],
   },
   {

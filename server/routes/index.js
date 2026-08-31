@@ -9,6 +9,7 @@ const generate = require('./generate');
 const assets = require('./assets');
 const styles = require('./styles');
 const ai = require('./ai');
+const settings = require('./settings');
 
 const router = express.Router();
 
@@ -50,6 +51,7 @@ router.use('/projects', projects.router);
 router.use('/assets', assets);
 router.use('/styles', styles);
 router.use('/ai', ai);
+router.use('/settings', settings);
 router.use('/', generate);
 
 module.exports = router;

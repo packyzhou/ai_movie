@@ -107,4 +107,5 @@ module.exports = {
   templates: collection('template', 'templates', 'templateId'),
   assets: collection('assets', 'assets', 'assetId'),
   styles: collection('styles', 'styles', 'styleId'),
+  settings: collection('settings', 'settings', 'settingId'),
 };

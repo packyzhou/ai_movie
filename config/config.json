@@ -9,7 +9,8 @@
   "navigation": [
     { "name": "projects", "label": "我的项目", "icon": "🎬" },
     { "name": "assets", "label": "素材库", "icon": "📦" },
-    { "name": "templates", "label": "AIGC模板", "icon": "🧩" }
+    { "name": "templates", "label": "AIGC模板", "icon": "🧩" },
+    { "name": "settings", "label": "设定模板", "icon": "🎨" }
   ],
   "outputDir": "resources/output",
   "ffmpegPath": "ffmpeg",

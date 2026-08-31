@@ -52,7 +52,7 @@ export const api = {
   validateTemplate: (content, type) => post('/api/templates/validate', { content, type }),
 
   // AI
-  optimizePrompt: (prompt) => post('/api/ai/optimize-prompt', { prompt }),
+  optimizePrompt: (prompt, settingContent = '') => post('/api/ai/optimize-prompt', { prompt, settingContent }),
   generateScript: (data) => post('/api/ai/generate-script', data),
 
   // assets
@@ -68,6 +68,13 @@ export const api = {
     return request('/api/assets/uploads', { method: 'POST', body: fd });
   },
   createTextAsset: (content) => post('/api/assets/text', { content }),
+
+  // settings
+  settings: (params) => request(`/api/settings?${qs(params)}`),
+  setting: (id) => request(`/api/settings/${encodeURIComponent(id)}`),
+  createSetting: (data) => post('/api/settings', data),
+  updateSetting: (id, data) => put(`/api/settings/${encodeURIComponent(id)}`, data),
+  deleteSetting: (id) => del(`/api/settings/${encodeURIComponent(id)}`),
 
   // styles
   styles: () => request('/api/styles'),

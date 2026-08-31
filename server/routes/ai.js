@@ -74,9 +74,14 @@ function parseJsonResponse(value) {
 router.post(
   '/optimize-prompt',
   asyncRoute(async (req, res) => {
-    const prompt = String((req.body || {}).prompt || '').trim();
+    const body = req.body || {};
+    const prompt = String(body.prompt || '').trim();
+    const settingContent = String(body.settingContent || '').trim();
     if (!prompt) throw bad('Prompt is required');
-    res.json({ prompt: await complete(readSystemPrompt(optimizationPromptFile), prompt) });
+    const userPrompt = settingContent && !prompt.startsWith(settingContent)
+      ? `项目设定内容（仅用于保持风格一致）：\n${settingContent}\n\n待优化提示词：\n${prompt}`
+      : prompt;
+    res.json({ prompt: await complete(readSystemPrompt(optimizationPromptFile), userPrompt) });
   })
 );
 
@@ -86,12 +91,13 @@ router.post(
     const body = req.body || {};
     const chapterName = String(body.chapterName || '').trim();
     const chapterIntroduction = String(body.chapterIntroduction || '').trim();
+    const settingContent = String(body.settingContent || '').trim();
     if (!chapterName) throw bad('Chapter name is required');
     if (!chapterIntroduction) throw bad('Chapter introduction is required');
 
     const raw = await complete(
       readSystemPrompt(scriptPromptFile),
-      JSON.stringify({ chapterName, chapterIntroduction, projectBackground: String(body.projectBackground || '').trim() })
+      JSON.stringify({ chapterName, chapterIntroduction, projectBackground: String(body.projectBackground || '').trim(), settingContent })
     );
     const data = parseJsonResponse(raw);
     const shots = Array.isArray(data) ? data : data.shots;

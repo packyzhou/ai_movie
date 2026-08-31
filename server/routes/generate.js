@@ -90,7 +90,15 @@ router.post(
     const shot = chapter.shots.find((s) => s.shotId === shotId);
     if (!shot) throw bad('Shot not found', 404);
     if (shot.disabled || shot.merged) throw bad('This shot cannot be generated');
-    shot.prompt = projects.promptOf(shot);
+    const setting = project.settingId ? store.settings.find(req.user, project.settingId) : null;
+    const settingContent = String(setting && setting.content || '').trim();
+    const shotPrompt = projects.promptOf(shot);
+    shot.prompt = settingContent && shotPrompt.startsWith(settingContent)
+      ? shotPrompt
+      : [settingContent, shotPrompt]
+      .map((part) => String(part || '').trim())
+      .filter(Boolean)
+      .join('\n\n');
 
     const template = store.templates.find(req.user, project.templateId);
     if (!template) throw bad(`Project template "${project.templateId}" no longer exists`);

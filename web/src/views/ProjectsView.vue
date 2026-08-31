@@ -12,6 +12,7 @@ const loading = ref(false);
 const error = ref('');
 
 const templates = ref([]);
+const settings = ref([]);
 const styles = ref([]);
 const modalOpen = ref(false);
 const saving = ref(false);
@@ -22,6 +23,7 @@ const form = reactive({
   projectId: '',
   name: '',
   templateId: '',
+  settingId: '',
   background: '',
   styleIds: [],
   chapters: [],
@@ -49,11 +51,13 @@ async function load(page = list.page) {
 }
 
 async function loadReferences() {
-  const [templateData, styleData] = await Promise.all([
+  const [templateData, settingData, styleData] = await Promise.all([
     api.templates({ page: 1, pageSize: 100 }),
+    api.settings({ page: 1, pageSize: 100 }),
     api.styles(),
   ]);
   templates.value = templateData.items;
+  settings.value = settingData.items;
   styles.value = styleData.styles;
 }
 
@@ -61,6 +65,7 @@ function resetForm() {
   form.projectId = uuid();
   form.name = '';
   form.templateId = videoTemplates.value.length ? videoTemplates.value[0].templateId : '';
+  form.settingId = '';
   form.background = '';
   form.styleIds = [];
   form.chapters = [{ key: uuid(), chapterId: '', title: '' }];
@@ -81,6 +86,7 @@ async function openEdit(row) {
   form.projectId = project.projectId;
   form.name = project.name;
   form.templateId = project.templateId;
+  form.settingId = project.settingId || '';
   form.background = project.background || '';
   form.styleIds = [...(project.styleIds || [])];
   form.chapters = (project.chapters || []).map((c) => ({
@@ -126,6 +132,7 @@ async function save() {
       projectId: form.projectId,
       name: form.name,
       templateId: form.templateId,
+      settingId: form.settingId,
       background: form.background,
       styleIds: form.styleIds,
       chapters,
@@ -238,6 +245,13 @@ onMounted(async () => {
             <select v-model="form.templateId" required>
               <option v-if="!videoTemplates.length" value="">暂无视频类型模板</option>
               <option v-for="t in videoTemplates" :key="t.templateId" :value="t.templateId">{{ t.name }}</option>
+            </select>
+          </label>
+          <label>
+            <span>设定</span>
+            <select v-model="form.settingId">
+              <option value="">不使用设定模板</option>
+              <option v-for="setting in settings" :key="setting.settingId" :value="setting.settingId">{{ setting.name }}</option>
             </select>
           </label>
           <label>
