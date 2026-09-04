@@ -41,12 +41,13 @@ npm run build                                          # 构建前端到 web/dis
 npm start                                              # http://localhost:3000
 ```
 
-开发模式（两个终端）：
+开发模式（前后端热更新）：
 
 ```bash
-npm run dev        # 后端 :3000
-npm run dev:web    # Vite :5173，代理 /api 与 /resources 到 :3000
+npm run dev        # 访问 http://localhost:3000；前端热更新，后端自动重启
 ```
+
+开发模式下Vite运行在`:3000`，Express API运行在内部端口`:3001`，`/api`与`/resources`会自动代理到后端。生产环境仍使用`npm run build && npm start`，由Express在`:3000`提供构建后的页面。
 
 ## 页面
 
@@ -91,13 +92,14 @@ npm run dev:web    # Vite :5173，代理 /api 与 /resources 到 :3000
 `{ "<节点ID>": { "class_type": "...", "inputs": { ... } } }`；也接受 `{ "prompt": { ... } }`
 外层包装。保存前会校验 JSON 以及每个节点的 `class_type` 与 `inputs`。
 
-保存时自动扫描工作流，推导六个参数的写入位置：
+保存时自动扫描工作流，推导生成参数的写入位置：
 
 | 参数 | 推导规则 |
 | --- | --- |
 | 首帧 / 尾帧 | `LoadImage` 节点，按 `_meta.title` 中的 `start`/`first`/`首` 与 `end`/`last`/`尾` 区分；否则按出现顺序取前两个 |
 | 提示词 / 宽 / 高 | 同时含 `prompt`、`width`、`height` 的节点 |
 | 时长 | 标题含 `duration`/`时长` 且有 `value` 的节点，否则取 `PrimitiveFloat` |
+| 开启加速 | 首个包含 `value` 输入的 `PrimitiveBoolean` 节点，新镜头默认写入 `true` |
 | 随机种子 | 含 `noise_seed` 或 `seed` 的节点，每次提交随机化 |
 
 弹窗中的「自检」会先行显示推导结果；缺失项会在模板列表标红，该模板将不能用于生成。

@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { api } from '../api';
 import ImageField from '../components/ImageField.vue';
+import AudioField from '../components/AudioField.vue';
 import JobStatus from '../components/JobStatus.vue';
 import VideoPreview from '../components/VideoPreview.vue';
 import Modal from '../components/Modal.vue';
@@ -14,6 +15,7 @@ const props = defineProps({
 const project = ref(null);
 const chapter = ref(null);
 const library = ref([]);
+const templates = ref([]);
 const options = ref({ limits: {}, pollIntervalMs: 1500 });
 
 const selectedId = ref('');
@@ -28,6 +30,9 @@ const draft = reactive({
   promptOverride: '',
   sourceShotIds: [],
   mergedSourceShotIds: [],
+  templateId: '',
+  acceleration: false,
+  mediaInputs: {},
   width: 1280,
   height: 704,
   duration: 5,
@@ -58,7 +63,7 @@ const scriptPrompt = ref('');
 const optimizingPrompt = ref(false);
 
 const addOpen = ref(false);
-const addForm = reactive({ name: '', remark: '' });
+const addForm = reactive({ name: '', remark: '', templateId: '', acceleration: false });
 const addError = ref('');
 
 let pollTimer = null;
@@ -66,6 +71,12 @@ let pollTimer = null;
 const shots = computed(() => (chapter.value && chapter.value.shots) || []);
 const selected = computed(() => shots.value.find((s) => s.shotId === selectedId.value) || null);
 const limits = computed(() => options.value.limits || {});
+const videoTemplates = computed(() => templates.value.filter((template) => (template.type || 'video') === 'video'));
+const defaultTemplateId = computed(() => videoTemplates.value.find((template) => template.isDefault)?.templateId || project.value?.templateId || videoTemplates.value[0]?.templateId || '');
+const draftTemplate = computed(() => videoTemplates.value.find((template) => template.templateId === draft.templateId) || null);
+const addTemplate = computed(() => videoTemplates.value.find((template) => template.templateId === addForm.templateId) || null);
+const draftMediaInputs = computed(() => draftTemplate.value?.mediaInputs || []);
+const draftImageInputs = computed(() => draftMediaInputs.value.filter((input) => input.kind === 'image'));
 const active = computed(() => job.value && (job.value.status === 'queued' || job.value.status === 'running'));
 const aggregatedPrompt = computed(() => draft.promptOverride ||
   [draft.promptStoryboard, draft.promptNegative]
@@ -94,8 +105,10 @@ const canBatchDelete = computed(() => selectedBatchShots.value.length > 0 &&
 const canMergeSelection = computed(() => selectedBatchShots.value.length >= 2 &&
   selectedBatchShots.value.every((shot) => stateOf(shot) === 'completed' && previewOf(shot)));
 
-// Frames are optional: without either frame the workflow runs in text-to-video mode.
-const mode = computed(() => (draft.firstFrame || draft.lastFrame ? '图生视频' : '文生视频'));
+const mode = computed(() => {
+  if (draftMediaInputs.value.some((input) => input.kind === 'audio') || draftImageInputs.value.length > 2) return '全能参考';
+  return draftImageInputs.value.length ? '图生视频' : '文生视频';
+});
 
 function stateOf(shot) {
   const status = shot.job?.status || 'pending';
@@ -127,6 +140,15 @@ const PRESETS = [
 ];
 
 function loadDraft(shot) {
+  const templateId = shot.templateId || project.value?.templateId || defaultTemplateId.value;
+  const generationTemplate = videoTemplates.value.find((template) => template.templateId === templateId);
+  const mediaInputs = { ...(shot.mediaInputs || {}) };
+  const templateMedia = generationTemplate?.mediaInputs || [];
+  const imageInputs = templateMedia.filter((input) => input.kind === 'image');
+  const firstInput = templateMedia.find((input) => input.path === generationTemplate?.bindings?.firstFrame?.path) || imageInputs[0];
+  const lastInput = templateMedia.find((input) => input.path === generationTemplate?.bindings?.lastFrame?.path) || imageInputs[1];
+  if (firstInput && !mediaInputs[firstInput.key] && shot.firstFrame) mediaInputs[firstInput.key] = shot.firstFrame;
+  if (lastInput && !mediaInputs[lastInput.key] && shot.lastFrame) mediaInputs[lastInput.key] = shot.lastFrame;
   Object.assign(draft, {
     shotId: shot.shotId,
     name: shot.name,
@@ -138,6 +160,9 @@ function loadDraft(shot) {
     promptOverride: shot.promptOverride || '',
     sourceShotIds: [...(shot.sourceShotIds || [])],
     mergedSourceShotIds: [...(shot.mergedSourceShotIds || shot.sourceShotIds || [])],
+    templateId,
+    acceleration: Boolean(generationTemplate?.supportsAcceleration && shot.acceleration !== false),
+    mediaInputs,
     width: shot.width,
     height: shot.height,
     duration: shot.duration,
@@ -175,9 +200,14 @@ async function load() {
   loading.value = true;
   error.value = '';
   try {
-    const [res, opts] = await Promise.all([api.chapter(props.projectId, props.chapterId), api.options()]);
+    const [res, opts, templateData] = await Promise.all([
+      api.chapter(props.projectId, props.chapterId),
+      api.options(),
+      api.templates({ page: 1, pageSize: 100 }),
+    ]);
     chapter.value = res.chapter;
     project.value = res.project;
+    templates.value = templateData.items;
     chapterIntroduction.value = res.chapter.introduction || '';
     lastSavedIntroduction.value = chapterIntroduction.value;
     options.value = opts;
@@ -249,6 +279,33 @@ async function generateScript() {
   }
 }
 
+function openAdd() {
+  addForm.templateId = defaultTemplateId.value;
+  addForm.acceleration = Boolean(addTemplate.value?.supportsAcceleration);
+  addError.value = '';
+  addOpen.value = true;
+}
+
+function changeAddTemplate() {
+  addForm.acceleration = Boolean(addTemplate.value?.supportsAcceleration);
+}
+
+function changeDraftTemplate() {
+  draft.acceleration = Boolean(draftTemplate.value?.supportsAcceleration);
+  const keys = new Set((draftTemplate.value?.mediaInputs || []).map((input) => input.key));
+  draft.mediaInputs = Object.fromEntries(Object.entries(draft.mediaInputs).filter(([key]) => keys.has(key)));
+  draft.firstFrame = '';
+  draft.lastFrame = '';
+}
+
+function setMediaInput(key, value) {
+  draft.mediaInputs = { ...draft.mediaInputs, [key]: value };
+}
+
+function mediaInputLabel(input) {
+  return `${input.title}（节点 ${input.nodeId}）`;
+}
+
 async function addShot() {
   addError.value = '';
   if (!addForm.name.trim()) {
@@ -317,16 +374,21 @@ async function save() {
   saving.value = true;
   error.value = '';
   try {
+    const firstInput = draftMediaInputs.value.find((input) => input.path === draftTemplate.value?.bindings?.firstFrame?.path) || draftImageInputs.value[0];
+    const lastInput = draftMediaInputs.value.find((input) => input.path === draftTemplate.value?.bindings?.lastFrame?.path) || draftImageInputs.value[1];
     const payload = selected.value.merged
       ? { name: draft.name, remark: draft.remark, sourceShotIds: draft.sourceShotIds }
       : {
           name: draft.name,
           remark: draft.remark,
-          firstFrame: draft.firstFrame,
-          lastFrame: draft.lastFrame,
+          firstFrame: firstInput ? draft.mediaInputs[firstInput.key] || '' : '',
+          lastFrame: lastInput ? draft.mediaInputs[lastInput.key] || '' : '',
+          mediaInputs: draft.mediaInputs,
           promptStoryboard: draft.promptStoryboard,
           promptNegative: draft.promptNegative,
           promptOverride: draft.promptOverride,
+          templateId: draft.templateId,
+          acceleration: draft.acceleration,
           width: draft.width,
           height: draft.height,
           duration: draft.duration,
@@ -686,7 +748,7 @@ onUnmounted(stopPolling);
             <button type="button" class="ghost-btn small" :disabled="batch.running || merging || !canMergeSelection" @click="mergeShots()">
               {{ merging ? '合成中…' : `合成 (${mergeSelection.length})` }}
             </button>
-            <button type="button" class="ghost-btn small" :disabled="batch.running" @click="addOpen = true">+ 添加</button>
+            <button type="button" class="ghost-btn small" :disabled="batch.running" @click="openAdd">+ 添加</button>
           </div>
         </div>
         <div v-if="batch.running || batch.message" class="batch-progress">
@@ -803,11 +865,40 @@ onUnmounted(stopPolling);
             </template>
 
             <template v-else>
-              <div class="frames">
-                <ImageField label="首帧 (first frame，可选)" v-model="draft.firstFrame" :library="library" @uploaded="refreshLibrary" />
-                <ImageField label="尾帧 (last frame，可选)" v-model="draft.lastFrame" :library="library" @uploaded="refreshLibrary" />
+              <div class="generation-options">
+                <label>
+                  <span>生成模板</span>
+                  <select v-model="draft.templateId" @change="changeDraftTemplate">
+                    <option v-if="!videoTemplates.length" value="">暂无视频类型模板</option>
+                    <option v-for="template in videoTemplates" :key="template.templateId" :value="template.templateId">
+                      {{ template.name }}{{ template.isDefault ? '（默认）' : '' }}
+                    </option>
+                  </select>
+                </label>
+                <label v-if="draftTemplate?.supportsAcceleration" class="acceleration-option">
+                  <input v-model="draft.acceleration" type="checkbox" />
+                  <span>开启加速</span>
+                </label>
               </div>
-              <p class="muted small frame-hint">不填写首帧和尾帧时，将直接使用提示词进行文生视频。</p>
+              <div v-if="draftMediaInputs.length" class="media-inputs">
+                <template v-for="input in draftMediaInputs" :key="input.key">
+                  <ImageField
+                    v-if="input.kind === 'image'"
+                    :label="mediaInputLabel(input)"
+                    :model-value="draft.mediaInputs[input.key] || ''"
+                    :library="library"
+                    @update:model-value="setMediaInput(input.key, $event)"
+                    @uploaded="refreshLibrary"
+                  />
+                  <AudioField
+                    v-else-if="input.kind === 'audio'"
+                    :label="mediaInputLabel(input)"
+                    :model-value="draft.mediaInputs[input.key] || ''"
+                    @update:model-value="setMediaInput(input.key, $event)"
+                  />
+                </template>
+              </div>
+              <p v-if="draftMediaInputs.length" class="muted small frame-hint">图片和音频均为可选；未上传时，请求工作流会自动移除对应媒体节点及其引用。</p>
 
               <div class="prompt-parts">
                 <label>
@@ -897,11 +988,24 @@ onUnmounted(stopPolling);
           <span>备注</span>
           <input v-model="addForm.remark" maxlength="500" placeholder="可选" />
         </label>
+        <label>
+          <span>生成模板 <em>*</em></span>
+          <select v-model="addForm.templateId" required @change="changeAddTemplate">
+            <option v-if="!videoTemplates.length" value="">暂无视频类型模板</option>
+            <option v-for="template in videoTemplates" :key="template.templateId" :value="template.templateId">
+              {{ template.name }}{{ template.isDefault ? '（默认）' : '' }}
+            </option>
+          </select>
+        </label>
+        <label v-if="addTemplate?.supportsAcceleration" class="acceleration-option">
+          <input v-model="addForm.acceleration" type="checkbox" />
+          <span>开启加速</span>
+        </label>
         <p v-if="addError" class="error">{{ addError }}</p>
       </div>
       <template #footer>
         <button type="button" class="ghost-btn" @click="addOpen = false">取消</button>
-        <button type="button" class="primary" @click="addShot">添加</button>
+        <button type="button" class="primary" :disabled="!addForm.templateId" @click="addShot">添加</button>
       </template>
     </Modal>
 
@@ -1199,9 +1303,26 @@ onUnmounted(stopPolling);
   margin: 0;
   font-size: 17px;
 }
-.frames {
+.generation-options {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: end;
+  gap: 14px;
+}
+.acceleration-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+}
+.acceleration-option input {
+  width: auto;
+  margin: 0;
+}
+.media-inputs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 14px;
 }
 .row2 {

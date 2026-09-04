@@ -76,12 +76,13 @@ function validate(params, bindings = {}) {
     width: clampInt(params.width, limits.width || {}, 'width'),
     height: clampInt(params.height, limits.height || {}, 'height'),
     duration: Number.isFinite(duration) ? duration : durSpec.default,
+    acceleration: params.acceleration === undefined ? true : params.acceleration === true,
   };
 }
 
 /**
  * Build a queueable prompt graph.
- * `graph` is the template's node map, `bindings`/`seedBinding` say where the six
+ * `graph` is the template's node map, `bindings`/`seedBinding` say where the
  * parameters go. Frame values must already be names known to ComfyUI's input folder.
  */
 function build(graph, bindings, params, { seed, seedBinding } = {}) {

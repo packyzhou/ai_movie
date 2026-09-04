@@ -381,7 +381,7 @@ async function remove(row) {
 watch([() => form.type, () => form.mode, matchingTemplates], () => {
   if (form.mode !== 'ai') return;
   if (!matchingTemplates.value.some((item) => item.templateId === form.templateId)) {
-    form.templateId = matchingTemplates.value[0]?.templateId || '';
+    form.templateId = matchingTemplates.value.find((item) => item.isDefault)?.templateId || matchingTemplates.value[0]?.templateId || '';
   }
 });
 watch(() => form.mode, resetGeneration);
@@ -516,7 +516,7 @@ onUnmounted(resetGeneration);
                 <input v-model.number="form.length" type="number" :min="limits.height?.min ?? 256" :max="limits.height?.max ?? 1920" :step="limits.height?.step ?? 32" />
               </label>
             </div>
-            <label><span>AI 模板 *</span><select v-model="form.templateId"><option value="">{{ matchingTemplates.length ? '请选择同类型模板' : '暂无同类型模板' }}</option><option v-for="item in matchingTemplates" :key="item.templateId" :value="item.templateId">{{ item.name }}</option></select></label>
+            <label><span>AI 模板 *</span><select v-model="form.templateId"><option value="">{{ matchingTemplates.length ? '请选择同类型模板' : '暂无同类型模板' }}</option><option v-for="item in matchingTemplates" :key="item.templateId" :value="item.templateId">{{ item.name }}{{ item.isDefault ? '（默认）' : '' }}</option></select></label>
           </div>
 
           <div class="prompt-head">

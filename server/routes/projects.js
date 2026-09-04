@@ -3,6 +3,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const store = require('../store');
+const templates = require('../templates');
 const workflow = require('../workflow');
 const shotjobs = require('../shotjobs');
 const archive = require('../archive');
@@ -41,6 +42,47 @@ function promptOf(shot) {
       .join('\n\n');
   }
   return String(shot.prompt || '').trim();
+}
+
+function videoTemplate(username, value) {
+  const id = String(value || '').trim();
+  const template = id && store.templates.find(username, id);
+  if (!template) throw bad(`Unknown template "${id}"`);
+  if ((template.type || 'video') !== 'video') throw bad('Shots can only use video templates');
+  return template;
+}
+
+function defaultVideoTemplate(username, projectTemplateId) {
+  const rows = store.templates.list(username).filter((row) => (row.type || 'video') === 'video');
+  return rows.find((row) => row.isDefault) || rows.find((row) => row.templateId === projectTemplateId) || rows[0] || null;
+}
+
+function templateGraph(template) {
+  return templates.loadGraph(template.templateId);
+}
+
+function templateSupportsAcceleration(template) {
+  return Boolean(templates.deriveBindings(templateGraph(template)).bindings.acceleration);
+}
+
+function templateMediaInputs(template) {
+  return templates.deriveMediaInputs(templateGraph(template));
+}
+
+function cleanMediaInputs(value, descriptors) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(descriptors.flatMap((input) => {
+    const filename = String(source[input.key] || '').trim().slice(0, 500);
+    return filename ? [[input.key, filename]] : [];
+  }));
+}
+
+function shotTemplate(username, value, projectTemplateId) {
+  const selected = String(value || '').trim()
+    ? videoTemplate(username, value)
+    : defaultVideoTemplate(username, projectTemplateId);
+  if (!selected) throw bad('No video template is available');
+  return selected;
 }
 
 function cleanSettingId(username, value) {
@@ -244,6 +286,8 @@ router.post(
   asyncRoute(async (req, res) => {
     const body = req.body || {};
     const { project, chapter } = locate(req.user, req.params.projectId, req.params.chapterId);
+    const generationTemplate = shotTemplate(req.user, body.templateId, project.templateId);
+    const supportsAcceleration = templateSupportsAcceleration(generationTemplate);
     const shot = {
       shotId: crypto.randomUUID(),
       seq: chapter.shots.length + 1, // sequence is generated, never entered
@@ -257,6 +301,9 @@ router.post(
       promptNegative: String(body.promptNegative || '').trim().slice(0, 10000) || NEGATIVE_DEFAULT,
       promptOverride: '',
       prompt: '',
+      templateId: generationTemplate.templateId,
+      acceleration: supportsAcceleration && (body.acceleration === undefined ? true : body.acceleration === true),
+      mediaInputs: cleanMediaInputs(body.mediaInputs, templateMediaInputs(generationTemplate)),
       disabled: false,
       merged: false,
       ...defaults(),
@@ -380,7 +427,7 @@ router.put(
 
 const SHOT_FIELDS = [
   'name', 'remark', 'firstFrame', 'lastFrame', 'promptStoryboard', 'promptNegative', 'promptOverride',
-  'width', 'height', 'duration',
+  'templateId', 'acceleration', 'mediaInputs', 'width', 'height', 'duration',
 ];
 
 router.put(
@@ -394,7 +441,18 @@ router.put(
     for (const field of SHOT_FIELDS) {
       if (body[field] === undefined) continue;
       if (field === 'name') shot.name = requireText(body.name, 'Shot name', 120);
-      else if (['width', 'height', 'duration'].includes(field)) shot[field] = Number(body[field]);
+      else if (field === 'templateId') {
+        const selectedTemplate = videoTemplate(req.user, body.templateId);
+        shot.templateId = selectedTemplate.templateId;
+        shot.mediaInputs = cleanMediaInputs(shot.mediaInputs, templateMediaInputs(selectedTemplate));
+        if (body.acceleration === undefined) shot.acceleration = templateSupportsAcceleration(selectedTemplate);
+      } else if (field === 'acceleration') {
+        const selectedTemplate = shotTemplate(req.user, shot.templateId, project.templateId);
+        shot.acceleration = templateSupportsAcceleration(selectedTemplate) && body.acceleration === true;
+      } else if (field === 'mediaInputs') {
+        const selectedTemplate = shotTemplate(req.user, shot.templateId, project.templateId);
+        shot.mediaInputs = cleanMediaInputs(body.mediaInputs, templateMediaInputs(selectedTemplate));
+      } else if (['width', 'height', 'duration'].includes(field)) shot[field] = Number(body[field]);
       else shot[field] = String(body[field] || '');
     }
     if (shot.merged && body.sourceShotIds !== undefined) {

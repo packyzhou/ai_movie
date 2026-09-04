@@ -11,6 +11,7 @@ const BINDING_LABELS = {
   width: '宽度',
   height: '高度',
   duration: '时长',
+  acceleration: '开启加速',
 };
 
 const list = reactive({ items: [], page: 1, pages: 1, total: 0, pageSize: 10 });
@@ -23,6 +24,9 @@ const saving = ref(false);
 const formError = ref('');
 const editingId = ref(null);
 const check = ref(null);
+const fileInput = ref(null);
+const fileDragging = ref(false);
+const settingDefaultId = ref('');
 
 const form = reactive({ templateId: '', name: '', type: 'video', content: '', remark: '' });
 const TYPE_LABELS = { video: '视频', image: '图片', text: '文本' };
@@ -80,22 +84,58 @@ async function selfCheck() {
   check.value = null;
   try {
     check.value = await api.validateTemplate(form.content, form.type);
+    return check.value;
   } catch (err) {
     formError.value = err.message;
+    return null;
   }
 }
 
 function formatJson() {
   try {
     form.content = JSON.stringify(JSON.parse(form.content), null, 2);
+    check.value = null;
     formError.value = '';
   } catch (err) {
     formError.value = `JSON 格式化失败：${err.message}`;
   }
 }
 
+async function loadJsonFile(file) {
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.json')) {
+    formError.value = '请选择 JSON 文件';
+    return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    formError.value = 'JSON 文件不能超过 10MB';
+    return;
+  }
+  try {
+    form.content = JSON.stringify(JSON.parse(await file.text()), null, 2);
+    formError.value = '';
+    await selfCheck();
+  } catch (err) {
+    check.value = null;
+    formError.value = `JSON 文件读取失败：${err.message}`;
+  }
+}
+
+function chooseFile(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = '';
+  loadJsonFile(file);
+}
+
+function dropFile(event) {
+  fileDragging.value = false;
+  loadJsonFile(event.dataTransfer.files && event.dataTransfer.files[0]);
+}
+
 async function save() {
   formError.value = '';
+  const validation = await selfCheck();
+  if (!validation) return;
   saving.value = true;
   try {
     const payload = {
@@ -115,6 +155,20 @@ async function save() {
     formError.value = err.message;
   } finally {
     saving.value = false;
+  }
+}
+
+async function setDefault(row) {
+  if (row.isDefault || settingDefaultId.value) return;
+  settingDefaultId.value = row.templateId;
+  error.value = '';
+  try {
+    await api.setDefaultTemplate(row.templateId);
+    await load(list.page);
+  } catch (err) {
+    error.value = err.message;
+  } finally {
+    settingDefaultId.value = '';
   }
 }
 
@@ -167,6 +221,7 @@ onMounted(() => load(1));
           <tr v-for="row in list.items" v-else :key="row.templateId">
             <td>
               <button type="button" class="name" @click="openEdit(row)">{{ row.name }}</button>
+              <span v-if="row.isDefault" class="badge completed">默认</span>
               <span v-if="row.builtin" class="badge">内置</span>
               <div class="mono muted">{{ row.templateId }}</div>
             </td>
@@ -177,10 +232,17 @@ onMounted(() => load(1));
               <span v-else class="badge failed" :title="row.missing.join(', ')">
                 缺 {{ row.missing.map((k) => BINDING_LABELS[k] || k).join('、') }}
               </span>
+              <span v-if="row.supportsAcceleration" class="badge">支持加速</span>
+              <span v-if="row.mediaInputs?.length" class="badge">
+                图片 {{ row.mediaInputs.filter((input) => input.kind === 'image').length }} · 音频 {{ row.mediaInputs.filter((input) => input.kind === 'audio').length }}
+              </span>
             </td>
             <td class="muted clip">{{ row.remark || '—' }}</td>
             <td class="muted">{{ new Date(row.updatedAt).toLocaleString() }}</td>
             <td class="right nowrap">
+              <button type="button" class="link" :disabled="row.isDefault || settingDefaultId === row.templateId" @click="setDefault(row)">
+                {{ row.isDefault ? '已默认' : settingDefaultId === row.templateId ? '设置中…' : '默认' }}
+              </button>
               <button type="button" class="link" @click="openEdit(row)">编辑</button>
               <button type="button" class="link danger" @click="remove(row)">删除</button>
             </td>
@@ -215,14 +277,28 @@ onMounted(() => load(1));
         <label>
           <span>
             模板内容（ComfyUI API 格式 JSON）<em>*</em>
-            <small class="muted">保存前会自检</small>
+            <small class="muted">可上传后预览修改，保存前会自动自检</small>
           </span>
+          <input ref="fileInput" class="file-input" type="file" accept=".json,application/json" @change="chooseFile" />
+          <button
+            type="button"
+            class="json-drop"
+            :class="{ dragging: fileDragging }"
+            @click="fileInput?.click()"
+            @dragenter.prevent="fileDragging = true"
+            @dragover.prevent="fileDragging = true"
+            @dragleave.prevent="fileDragging = false"
+            @drop.prevent="dropFile"
+          >
+            拖拽JSON文件到此处，或点击选择文件（最大10MB）
+          </button>
           <textarea
             v-model="form.content"
-            rows="14"
+            rows="26"
             class="mono code"
             spellcheck="false"
             placeholder='{ "3": { "class_type": "KSampler", "inputs": { ... } } }'
+            @input="check = null"
           />
         </label>
 
@@ -235,6 +311,10 @@ onMounted(() => load(1));
               未绑定：{{ check.missing.map((k) => BINDING_LABELS[k] || k).join('、') }}
             </span>
             <span v-else class="badge completed">模板所需参数全部绑定成功</span>
+            <span v-if="check.supportsAcceleration" class="badge completed">检测到 PrimitiveBoolean，可控制加速</span>
+            <span v-if="check.mediaInputs.length" class="badge completed">
+              媒体输入：图片 {{ check.mediaInputs.filter((input) => input.kind === 'image').length }} · 音频 {{ check.mediaInputs.filter((input) => input.kind === 'audio').length }}
+            </span>
           </template>
         </div>
 
@@ -246,6 +326,10 @@ onMounted(() => load(1));
           <div v-if="check.seed" class="binding">
             <span class="muted">随机种子</span>
             <code>{{ check.seed.path }}</code>
+          </div>
+          <div v-for="input in check.mediaInputs" :key="input.key" class="binding">
+            <span class="muted">{{ input.kind === 'image' ? '图片' : '音频' }} · {{ input.title }}</span>
+            <code>{{ input.path }}</code>
           </div>
         </div>
 
@@ -358,7 +442,27 @@ em {
   color: var(--danger);
   font-style: normal;
 }
+.file-input {
+  display: none;
+}
+.json-drop {
+  width: 100%;
+  margin: 7px 0 10px;
+  padding: 16px;
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+}
+.json-drop:hover,
+.json-drop.dragging {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--surface-2);
+}
 .code {
+  min-height: 480px;
   font-size: 12px;
   line-height: 1.6;
   white-space: pre;

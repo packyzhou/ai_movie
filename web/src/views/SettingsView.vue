@@ -16,6 +16,8 @@ const DEFAULT_CONTENT = `【画风】电影感写实，轻微柔光晕染
 【光影】霓虹光源，阴影偏蓝紫，高对比
 【质感】胶片颗粒，略带模糊
 【氛围】繁华又孤寂的赛博朋克夜
+【语音】对白使用中文普通话
+【字幕】简体中文字幕
 【约束】全程保持以上画风、色调、光影、质感、氛围不变。`;
 const form = reactive({ settingId: '', name: '', content: DEFAULT_CONTENT, remark: '' });
 

@@ -64,7 +64,7 @@ async function loadReferences() {
 function resetForm() {
   form.projectId = uuid();
   form.name = '';
-  form.templateId = videoTemplates.value.length ? videoTemplates.value[0].templateId : '';
+  form.templateId = videoTemplates.value.find((template) => template.isDefault)?.templateId || videoTemplates.value[0]?.templateId || '';
   form.settingId = '';
   form.background = '';
   form.styleIds = [];
@@ -244,7 +244,7 @@ onMounted(async () => {
             <span>模板 <em>*</em></span>
             <select v-model="form.templateId" required>
               <option v-if="!videoTemplates.length" value="">暂无视频类型模板</option>
-              <option v-for="t in videoTemplates" :key="t.templateId" :value="t.templateId">{{ t.name }}</option>
+              <option v-for="t in videoTemplates" :key="t.templateId" :value="t.templateId">{{ t.name }}{{ t.isDefault ? '（默认）' : '' }}</option>
             </select>
           </label>
           <label>

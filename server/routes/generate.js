@@ -18,12 +18,22 @@ const { asyncRoute, bad } = require('./helpers');
 const router = express.Router();
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp']);
+const AUDIO_EXT = new Set(['.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac']);
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 32 * 1024 * 1024, files: 2 },
   fileFilter(req, file, cb) {
     const ext = path.extname(file.originalname).toLowerCase();
     if (!IMAGE_EXT.has(ext)) return cb(new Error(`Unsupported image type "${ext}"`));
+    cb(null, true);
+  },
+});
+const audioUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+  fileFilter(req, file, cb) {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!AUDIO_EXT.has(ext)) return cb(new Error(`Unsupported audio type "${ext}"`));
     cb(null, true);
   },
 });
@@ -67,12 +77,28 @@ router.post(
   })
 );
 
-/** Re-push a stored frame to ComfyUI - its input folder may have been cleared. */
-async function pushFrame(name, label) {
+router.post(
+  '/uploads/audio',
+  audioUpload.single('file'),
+  asyncRoute(async (req, res) => {
+    if (!req.file) throw bad('No audio file uploaded');
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    const stored = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
+    fs.mkdirSync(config.resourcesDir, { recursive: true });
+    fs.writeFileSync(path.join(config.resourcesDir, stored), req.file.buffer);
+    await comfy.uploadImage(req.file.buffer, stored);
+    res.json({ name: stored, url: `/resources/images/${encodeURIComponent(stored)}` });
+  })
+);
+
+/** Re-push a stored media input to ComfyUI - its input folder may have been cleared. */
+async function pushMedia(name, input) {
   const base = path.basename(String(name || ''));
-  if (!base) throw bad(`${label} image is required`);
+  const allowed = input.kind === 'audio' ? AUDIO_EXT : IMAGE_EXT;
+  if (!base) throw bad(`${input.title} is required`);
+  if (!allowed.has(path.extname(base).toLowerCase())) throw bad(`${input.title} has an unsupported ${input.kind} type`);
   const full = path.join(config.resourcesDir, base);
-  if (!fs.existsSync(full)) throw bad(`Image "${base}" not found in resources/images`);
+  if (!fs.existsSync(full)) throw bad(`Media file "${base}" not found in resources/images`);
   return comfy.uploadImage(fs.readFileSync(full), base);
 }
 
@@ -100,44 +126,56 @@ router.post(
       .filter(Boolean)
       .join('\n\n');
 
-    const template = store.templates.find(req.user, project.templateId);
-    if (!template) throw bad(`Project template "${project.templateId}" no longer exists`);
-    if ((template.type || 'video') !== 'video') throw bad(`Project template "${template.name}" is not a video template`);
+    const templateId = shot.templateId || project.templateId;
+    const template = store.templates.find(req.user, templateId);
+    if (!template) throw bad(`Shot template "${templateId}" no longer exists`);
+    if ((template.type || 'video') !== 'video') throw bad(`Shot template "${template.name}" is not a video template`);
 
-    const sourceGraph = tpl.loadGraph(template.templateId);
-    // Older rows may have been created before snake_case/custom-node binding
-    // support was added. Re-derive those rows from the stored workflow.
-    const derived = tpl.deriveBindings(sourceGraph);
-    const needsDerivation = !template.bindings || !Object.keys(template.bindings).length ||
-      (template.missing && template.missing.length);
-    const bindings = needsDerivation ? derived.bindings : template.bindings;
-    const missing = needsDerivation ? derived.missing : [];
-    if (missing.length) {
-      throw bad(`Template "${template.name}" has no binding for: ${missing.join(', ')}`);
+    const storedGraph = tpl.loadGraph(template.templateId);
+    // Re-derive from the stored workflow so newly supported node bindings are available immediately.
+    const derived = tpl.deriveBindings(storedGraph);
+    const bindings = derived.bindings;
+    if (derived.missing.length) {
+      throw bad(`Template "${template.name}" has no binding for: ${derived.missing.join(', ')}`);
     }
-
-    const hasFrames = Boolean(shot.firstFrame || shot.lastFrame);
-    const generationBindings = hasFrames
-      ? bindings
-      : Object.fromEntries(Object.entries(bindings).filter(([key]) => key !== 'firstFrame' && key !== 'lastFrame'));
-    const [firstFrame, lastFrame] = await Promise.all([
-      hasFrames && bindings.firstFrame ? pushFrame(shot.firstFrame, 'First frame') : Promise.resolve(''),
-      hasFrames && bindings.lastFrame ? pushFrame(shot.lastFrame, 'Last frame') : Promise.resolve(''),
-    ]);
-
+    const mediaInputs = tpl.deriveMediaInputs(storedGraph);
+    const mediaValues = { ...(shot.mediaInputs || {}) };
+    const imageInputs = mediaInputs.filter((input) => input.kind === 'image');
+    const firstInput = mediaInputs.find((input) => input.path === bindings.firstFrame?.path) || imageInputs[0];
+    const lastInput = mediaInputs.find((input) => input.path === bindings.lastFrame?.path) || imageInputs[1];
+    if (firstInput && !mediaValues[firstInput.key] && shot.firstFrame) mediaValues[firstInput.key] = shot.firstFrame;
+    if (lastInput && !mediaValues[lastInput.key] && shot.lastFrame) mediaValues[lastInput.key] = shot.lastFrame;
+    const uploadedMedia = await Promise.all(mediaInputs.flatMap((input) => mediaValues[input.key]
+      ? [pushMedia(mediaValues[input.key], input).then((name) => ({ input, name }))]
+      : []));
+    const uploadedByKey = new Map(uploadedMedia.map((media) => [media.input.key, media.name]));
+    const sourceGraph = tpl.applyMediaInputs(storedGraph, mediaInputs, Object.fromEntries(uploadedByKey));
+    const mediaPaths = new Set(mediaInputs.map((input) => input.path));
+    const directFrames = await Promise.all([
+      ['firstFrame', shot.firstFrame, 'First frame'],
+      ['lastFrame', shot.lastFrame, 'Last frame'],
+    ].flatMap(([key, value, title]) => bindings[key] && !mediaPaths.has(bindings[key].path) && value
+      ? [pushMedia(value, { kind: 'image', title }).then((name) => ({ path: bindings[key].path, name }))]
+      : []));
+    const generationBindings = Object.fromEntries(
+      Object.entries(bindings).filter(([key]) => key !== 'firstFrame' && key !== 'lastFrame')
+    );
     const { graph, params } = workflow.build(
       sourceGraph,
       generationBindings,
       {
-        firstFrame,
-        lastFrame,
         prompt: shot.prompt,
         width: shot.width,
         height: shot.height,
         duration: shot.duration,
+        acceleration: shot.acceleration !== false,
       },
       { seedBinding: template.seed }
     );
+    for (const frame of directFrames) workflow.setInput(graph, frame.path, frame.name);
+    shot.mediaInputs = Object.fromEntries(mediaInputs.flatMap((input) => mediaValues[input.key] ? [[input.key, mediaValues[input.key]]] : []));
+    shot.firstFrame = firstInput ? mediaValues[firstInput.key] || '' : shot.firstFrame || '';
+    shot.lastFrame = lastInput ? mediaValues[lastInput.key] || '' : shot.lastFrame || '';
 
     const result = await comfy.queuePrompt(graph, jobs.CLIENT_ID);
     if (result && result.node_errors && Object.keys(result.node_errors).length) {

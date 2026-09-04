@@ -80,8 +80,43 @@ function parseGraph(content) {
 
 const title = (node) => String((node._meta && node._meta.title) || '').toLowerCase();
 
+function deriveMediaInputs(graph) {
+  return Object.entries(graph).flatMap(([nodeId, node]) => {
+    const kind = node.class_type === 'LoadImage' ? 'image' : node.class_type === 'LoadAudio' ? 'audio' : '';
+    if (!kind) return [];
+    const field = kind === 'image' ? 'image' : 'audio';
+    return [{
+      key: nodeId,
+      nodeId,
+      kind,
+      title: String((node._meta && node._meta.title) || node.class_type),
+      path: `${nodeId}.inputs.${field}`,
+    }];
+  });
+}
+
+function applyMediaInputs(graph, mediaInputs, values) {
+  const out = JSON.parse(JSON.stringify(graph));
+  const omitted = new Set(mediaInputs.filter((input) => !values[input.key]).map((input) => input.nodeId));
+  for (const node of Object.values(out)) {
+    for (const [field, value] of Object.entries(node.inputs || {})) {
+      if (Array.isArray(value) && omitted.has(String(value[0]))) delete node.inputs[field];
+    }
+  }
+  for (const input of mediaInputs) {
+    if (!values[input.key]) {
+      delete out[input.nodeId];
+      continue;
+    }
+    const node = out[input.nodeId];
+    if (!node) throw new Error(`Workflow has no media node "${input.nodeId}"`);
+    node.inputs[input.kind === 'image' ? 'image' : 'audio'] = values[input.key];
+  }
+  return out;
+}
+
 /**
- * Work out which node inputs the six UI parameters should be written to.
+ * Work out which node inputs the UI parameters should be written to.
  * A pasted workflow has no annotations, so this leans on the conventions the
  * MiniMax/Wan-style templates follow: LoadImage nodes for the frames, one
  * node carrying prompt+width+height, and a titled primitive for duration.
@@ -132,23 +167,16 @@ function deriveBindings(graph) {
     entries.find(([, n]) => n.class_type === 'PrimitiveFloat' && 'value' in n.inputs);
   if (durationNode) bindings.duration = { path: `${durationNode[0]}.inputs.value`, type: 'float' };
 
+  const accelerationNode = entries.find(([, n]) => n.class_type === 'PrimitiveBoolean' && 'value' in n.inputs);
+  if (accelerationNode) bindings.acceleration = { path: `${accelerationNode[0]}.inputs.value`, type: 'boolean' };
+
   const seedNode =
     entries.find(([, n]) => 'noise_seed' in n.inputs) || entries.find(([, n]) => 'seed' in n.inputs);
   const seed = seedNode
     ? { path: `${seedNode[0]}.inputs.${'noise_seed' in seedNode[1].inputs ? 'noise_seed' : 'seed'}` }
     : null;
 
-  // Prompt-only video workflows have no frame inputs, so frames are optional.
-  // MiniMax H3 T2V may also expose `first_frame` as its text prompt and use a
-  // fixed duration. Image-to-video workflows retain the frame requirements.
-  const optional = !bindings.firstFrame && !bindings.lastFrame
-    ? ['firstFrame', 'lastFrame']
-    : videoNode && 'first_frame' in videoNode[1].inputs
-      ? ['firstFrame', 'duration']
-      : [];
-  const missing = ['firstFrame', 'lastFrame', 'prompt', 'width', 'height', 'duration'].filter(
-    (k) => !bindings[k] && !optional.includes(k)
-  );
+  const missing = ['prompt', 'width', 'height', 'duration'].filter((k) => !bindings[k]);
   return { bindings, seed, missing };
 }
 
@@ -172,4 +200,4 @@ function removeFiles(templateId) {
   if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
 }
 
-module.exports = { parseGraph, deriveBindings, save, loadGraph, removeFiles, dirFor };
+module.exports = { parseGraph, deriveBindings, deriveMediaInputs, applyMediaInputs, save, loadGraph, removeFiles, dirFor };

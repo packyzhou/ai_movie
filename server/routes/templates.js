@@ -21,6 +21,10 @@ function missingForType(missing, type) {
   return type === 'video' ? missing : missing.filter((key) => key === 'prompt');
 }
 
+function supportsAcceleration(graph) {
+  return Boolean(tpl.deriveBindings(graph).bindings.acceleration);
+}
+
 /** The row we hand to the list view - the full graph stays out of it. */
 function summarize(row) {
   const { graph, ...rest } = row;
@@ -49,8 +53,37 @@ function seedDefault(username) {
     bindings,
     seed,
     missing,
+    supportsAcceleration: supportsAcceleration(graph),
+    mediaInputs: tpl.deriveMediaInputs(graph),
+    isDefault: true,
     builtin: true,
   });
+}
+
+function hydrateTemplates(username) {
+  const rows = store.templates.list(username);
+  for (const row of rows) {
+    const graph = tpl.loadGraph(row.templateId);
+    const derived = tpl.deriveBindings(graph);
+    const acceleration = derived.bindings.acceleration;
+    const mediaInputs = tpl.deriveMediaInputs(graph);
+    if (Boolean(row.supportsAcceleration) === Boolean(acceleration) &&
+      (row.bindings && row.bindings.acceleration && row.bindings.acceleration.path) === (acceleration && acceleration.path) &&
+      JSON.stringify(row.mediaInputs || []) === JSON.stringify(mediaInputs)) continue;
+    store.templates.update(username, row.templateId, {
+      bindings: derived.bindings,
+      seed: derived.seed,
+      missing: missingForType(derived.missing, row.type || 'video'),
+      supportsAcceleration: Boolean(acceleration),
+      mediaInputs,
+    });
+  }
+  const defaults = rows.filter((row) => row.isDefault);
+  if (rows.length && !defaults.length) {
+    store.templates.update(username, rows[0].templateId, { isDefault: true });
+  } else {
+    for (const duplicate of defaults.slice(1)) store.templates.update(username, duplicate.templateId, { isDefault: false });
+  }
 }
 
 router.get(
@@ -58,8 +91,9 @@ router.get(
   asyncRoute(async (req, res) => {
     try {
       seedDefault(req.user);
+      hydrateTemplates(req.user);
     } catch (err) {
-      console.error('[templates] seedDefault skipped:', err.message);
+      console.error('[templates] template hydration skipped:', err.message);
     }
     const result = store.templates.page(req.user, pageQuery(req, ['name', 'templateId', 'remark']));
     res.json({ ...result, items: result.items.map(summarize) });
@@ -98,6 +132,9 @@ router.post(
       bindings,
       seed,
       missing,
+      supportsAcceleration: supportsAcceleration(graph),
+      mediaInputs: tpl.deriveMediaInputs(graph),
+      isDefault: store.templates.list(req.user).length === 0,
     });
     res.json({ template: summarize(row), missing });
   })
@@ -128,6 +165,8 @@ router.put(
         bindings: derived.bindings,
         seed: derived.seed,
         missing: missingForType(derived.missing, patch.type || existing.type || 'video'),
+        supportsAcceleration: supportsAcceleration(graph),
+        mediaInputs: tpl.deriveMediaInputs(graph),
       });
     } else if (patch.type) {
       const derived = tpl.deriveBindings(tpl.loadGraph(existing.templateId));
@@ -139,13 +178,29 @@ router.put(
   })
 );
 
+router.post(
+  '/:templateId/default',
+  asyncRoute(async (req, res) => {
+    const selected = store.templates.find(req.user, req.params.templateId);
+    if (!selected) throw bad('Template not found', 404);
+    for (const row of store.templates.list(req.user)) {
+      if (Boolean(row.isDefault) !== (row.templateId === selected.templateId)) {
+        store.templates.update(req.user, row.templateId, { isDefault: row.templateId === selected.templateId });
+      }
+    }
+    res.json({ template: summarize(store.templates.find(req.user, selected.templateId)) });
+  })
+);
+
 router.delete(
   '/:templateId',
   asyncRoute(async (req, res) => {
-    const inUse = store.projects
-      .list(req.user)
-      .filter((p) => p.templateId === req.params.templateId)
-      .map((p) => p.name);
+    const inUse = store.projects.list(req.user).flatMap((project) => {
+      const uses = project.templateId === req.params.templateId || (project.chapters || []).some((chapter) =>
+        (chapter.shots || []).some((shot) => shot.templateId === req.params.templateId)
+      );
+      return uses ? [project.name] : [];
+    });
     if (inUse.length) throw bad(`Template is used by: ${inUse.join(', ')}`);
 
     store.templates.remove(req.user, req.params.templateId);
@@ -163,7 +218,13 @@ router.post(
     const graph = tpl.parseGraph(body.content);
     const derived = tpl.deriveBindings(graph);
     derived.missing = missingForType(derived.missing, type);
-    res.json({ ok: true, nodeCount: Object.keys(graph).length, ...derived });
+    res.json({
+      ok: true,
+      nodeCount: Object.keys(graph).length,
+      supportsAcceleration: supportsAcceleration(graph),
+      mediaInputs: tpl.deriveMediaInputs(graph),
+      ...derived,
+    });
   })
 );
 

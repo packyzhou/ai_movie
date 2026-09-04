@@ -42,12 +42,18 @@ export const api = {
     fd.append('file', file);
     return request('/api/uploads', { method: 'POST', body: fd });
   },
+  uploadAudio(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    return request('/api/uploads/audio', { method: 'POST', body: fd });
+  },
 
   // templates
   templates: (params) => request(`/api/templates?${qs(params)}`),
   template: (id) => request(`/api/templates/${encodeURIComponent(id)}`),
   createTemplate: (data) => post('/api/templates', data),
   updateTemplate: (id, data) => put(`/api/templates/${encodeURIComponent(id)}`, data),
+  setDefaultTemplate: (id) => post(`/api/templates/${encodeURIComponent(id)}/default`),
   deleteTemplate: (id) => del(`/api/templates/${encodeURIComponent(id)}`),
   validateTemplate: (content, type) => post('/api/templates/validate', { content, type }),
 
