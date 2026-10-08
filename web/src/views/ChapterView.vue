@@ -33,6 +33,7 @@ const draft = reactive({
   templateId: '',
   acceleration: false,
   mediaInputs: {},
+  mediaTrims: {},
   width: 1280,
   height: 704,
   duration: 5,
@@ -163,6 +164,7 @@ function loadDraft(shot) {
     templateId,
     acceleration: Boolean(generationTemplate?.supportsAcceleration && shot.acceleration !== false),
     mediaInputs,
+    mediaTrims: { ...(shot.mediaTrims || {}) },
     width: shot.width,
     height: shot.height,
     duration: shot.duration,
@@ -292,14 +294,24 @@ function changeAddTemplate() {
 
 function changeDraftTemplate() {
   draft.acceleration = Boolean(draftTemplate.value?.supportsAcceleration);
-  const keys = new Set((draftTemplate.value?.mediaInputs || []).map((input) => input.key));
+  const inputs = draftTemplate.value?.mediaInputs || [];
+  const keys = new Set(inputs.map((input) => input.key));
+  const audioKeys = new Set(inputs.filter((input) => input.kind === 'audio').map((input) => input.key));
   draft.mediaInputs = Object.fromEntries(Object.entries(draft.mediaInputs).filter(([key]) => keys.has(key)));
+  draft.mediaTrims = Object.fromEntries(Object.entries(draft.mediaTrims).filter(([key]) => audioKeys.has(key)));
   draft.firstFrame = '';
   draft.lastFrame = '';
 }
 
 function setMediaInput(key, value) {
   draft.mediaInputs = { ...draft.mediaInputs, [key]: value };
+}
+
+function setMediaTrim(key, value) {
+  const next = { ...draft.mediaTrims };
+  if (value) next[key] = value;
+  else delete next[key];
+  draft.mediaTrims = next;
 }
 
 function mediaInputLabel(input) {
@@ -384,6 +396,7 @@ async function save() {
           firstFrame: firstInput ? draft.mediaInputs[firstInput.key] || '' : '',
           lastFrame: lastInput ? draft.mediaInputs[lastInput.key] || '' : '',
           mediaInputs: draft.mediaInputs,
+          mediaTrims: draft.mediaTrims,
           promptStoryboard: draft.promptStoryboard,
           promptNegative: draft.promptNegative,
           promptOverride: draft.promptOverride,
@@ -894,11 +907,13 @@ onUnmounted(stopPolling);
                     v-else-if="input.kind === 'audio'"
                     :label="mediaInputLabel(input)"
                     :model-value="draft.mediaInputs[input.key] || ''"
+                    :trim-value="draft.mediaTrims[input.key] || null"
                     @update:model-value="setMediaInput(input.key, $event)"
+                    @update:trim-value="setMediaTrim(input.key, $event)"
                   />
                 </template>
               </div>
-              <p v-if="draftMediaInputs.length" class="muted small frame-hint">图片和音频均为可选；未上传时，请求工作流会自动移除对应媒体节点及其引用。</p>
+              <p v-if="draftMediaInputs.length" class="muted small frame-hint">图片和音频均为可选；未上传时自动移除对应节点。超过15秒的音频需先选择2–15秒片段。</p>
 
               <div class="prompt-parts">
                 <label>

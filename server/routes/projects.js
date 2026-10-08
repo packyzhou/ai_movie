@@ -77,6 +77,18 @@ function cleanMediaInputs(value, descriptors) {
   }));
 }
 
+function cleanMediaTrims(value, descriptors) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const audioKeys = new Set(descriptors.filter((input) => input.kind === 'audio').map((input) => input.key));
+  return Object.fromEntries(Object.entries(source).flatMap(([key, range]) => {
+    if (!audioKeys.has(key) || !range || typeof range !== 'object') return [];
+    const start = Math.max(0, Number(range.start));
+    const requestedEnd = Number(range.end);
+    if (!Number.isFinite(start) || !Number.isFinite(requestedEnd) || requestedEnd - start < 2) return [];
+    return [[key, { start, end: Math.min(requestedEnd, start + 15) }]];
+  }));
+}
+
 function shotTemplate(username, value, projectTemplateId) {
   const selected = String(value || '').trim()
     ? videoTemplate(username, value)
@@ -304,6 +316,7 @@ router.post(
       templateId: generationTemplate.templateId,
       acceleration: supportsAcceleration && (body.acceleration === undefined ? true : body.acceleration === true),
       mediaInputs: cleanMediaInputs(body.mediaInputs, templateMediaInputs(generationTemplate)),
+      mediaTrims: cleanMediaTrims(body.mediaTrims, templateMediaInputs(generationTemplate)),
       disabled: false,
       merged: false,
       ...defaults(),
@@ -427,7 +440,7 @@ router.put(
 
 const SHOT_FIELDS = [
   'name', 'remark', 'firstFrame', 'lastFrame', 'promptStoryboard', 'promptNegative', 'promptOverride',
-  'templateId', 'acceleration', 'mediaInputs', 'width', 'height', 'duration',
+  'templateId', 'acceleration', 'mediaInputs', 'mediaTrims', 'width', 'height', 'duration',
 ];
 
 router.put(
@@ -445,6 +458,7 @@ router.put(
         const selectedTemplate = videoTemplate(req.user, body.templateId);
         shot.templateId = selectedTemplate.templateId;
         shot.mediaInputs = cleanMediaInputs(shot.mediaInputs, templateMediaInputs(selectedTemplate));
+        shot.mediaTrims = cleanMediaTrims(shot.mediaTrims, templateMediaInputs(selectedTemplate));
         if (body.acceleration === undefined) shot.acceleration = templateSupportsAcceleration(selectedTemplate);
       } else if (field === 'acceleration') {
         const selectedTemplate = shotTemplate(req.user, shot.templateId, project.templateId);
@@ -452,6 +466,9 @@ router.put(
       } else if (field === 'mediaInputs') {
         const selectedTemplate = shotTemplate(req.user, shot.templateId, project.templateId);
         shot.mediaInputs = cleanMediaInputs(body.mediaInputs, templateMediaInputs(selectedTemplate));
+      } else if (field === 'mediaTrims') {
+        const selectedTemplate = shotTemplate(req.user, shot.templateId, project.templateId);
+        shot.mediaTrims = cleanMediaTrims(body.mediaTrims, templateMediaInputs(selectedTemplate));
       } else if (['width', 'height', 'duration'].includes(field)) shot[field] = Number(body[field]);
       else shot[field] = String(body[field] || '');
     }

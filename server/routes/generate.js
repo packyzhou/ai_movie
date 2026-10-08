@@ -12,6 +12,7 @@ const tpl = require('../templates');
 const workflow = require('../workflow');
 const shotjobs = require('../shotjobs');
 const archive = require('../archive');
+const { runFfmpeg } = require('../merge');
 const projects = require('./projects');
 const { asyncRoute, bad } = require('./helpers');
 
@@ -86,19 +87,40 @@ router.post(
     const stored = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
     fs.mkdirSync(config.resourcesDir, { recursive: true });
     fs.writeFileSync(path.join(config.resourcesDir, stored), req.file.buffer);
-    await comfy.uploadImage(req.file.buffer, stored);
     res.json({ name: stored, url: `/resources/images/${encodeURIComponent(stored)}` });
   })
 );
 
+async function pushNormalizedAudio(full, base, duration, trim) {
+  const requestedStart = Number(trim && trim.start);
+  const requestedEnd = Number(trim && trim.end);
+  const start = Number.isFinite(requestedStart) && requestedStart >= 0 ? requestedStart : 0;
+  const selectedDuration = Number.isFinite(requestedEnd) && requestedEnd > start ? requestedEnd - start : Number(duration) || 5;
+  const seconds = Math.min(15, Math.max(2, selectedDuration));
+  const token = `${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const temp = path.join(config.resourcesDir, `.audio_${token}.wav`);
+  const range = `${String(start).replace('.', '_')}_${String(seconds).replace('.', '_')}s`;
+  const remote = `${path.parse(base).name}_${range}_${token}.wav`;
+  try {
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-y', '-ss', String(start), '-i', full, '-vn',
+      '-af', 'apad', '-t', String(seconds), '-ac', '2', '-ar', '44100', '-c:a', 'pcm_s16le', temp,
+    ]);
+    return await comfy.uploadImage(fs.readFileSync(temp), remote);
+  } finally {
+    fs.rmSync(temp, { force: true });
+  }
+}
+
 /** Re-push a stored media input to ComfyUI - its input folder may have been cleared. */
-async function pushMedia(name, input) {
+async function pushMedia(name, input, duration, trim) {
   const base = path.basename(String(name || ''));
   const allowed = input.kind === 'audio' ? AUDIO_EXT : IMAGE_EXT;
   if (!base) throw bad(`${input.title} is required`);
   if (!allowed.has(path.extname(base).toLowerCase())) throw bad(`${input.title} has an unsupported ${input.kind} type`);
   const full = path.join(config.resourcesDir, base);
   if (!fs.existsSync(full)) throw bad(`Media file "${base}" not found in resources/images`);
+  if (input.kind === 'audio') return pushNormalizedAudio(full, base, duration, trim);
   return comfy.uploadImage(fs.readFileSync(full), base);
 }
 
@@ -146,7 +168,7 @@ router.post(
     if (firstInput && !mediaValues[firstInput.key] && shot.firstFrame) mediaValues[firstInput.key] = shot.firstFrame;
     if (lastInput && !mediaValues[lastInput.key] && shot.lastFrame) mediaValues[lastInput.key] = shot.lastFrame;
     const uploadedMedia = await Promise.all(mediaInputs.flatMap((input) => mediaValues[input.key]
-      ? [pushMedia(mediaValues[input.key], input).then((name) => ({ input, name }))]
+      ? [pushMedia(mediaValues[input.key], input, shot.duration, shot.mediaTrims && shot.mediaTrims[input.key]).then((name) => ({ input, name }))]
       : []));
     const uploadedByKey = new Map(uploadedMedia.map((media) => [media.input.key, media.name]));
     const sourceGraph = tpl.applyMediaInputs(storedGraph, mediaInputs, Object.fromEntries(uploadedByKey));

@@ -50,4 +50,4 @@ async function mergeVideos(files, { username, projectId, chapterId, shotId, date
   return { file: relative, videoUrl: archive.videoUrlFor(relative), bytes: archive.sizeOf(relative) };
 }
 
-module.exports = { mergeVideos };
+module.exports = { mergeVideos, runFfmpeg };
